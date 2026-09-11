@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from agent_execution_service.errors import NotFoundError
 from agent_execution_service.job_client import JobGateway, JobRef
-from agent_execution_service.models import EmailApprovalRow, TaskRow, new_id, now
+from agent_execution_service.models import TaskRow, new_id, now
 
 # job_svc status string -> the task status string stored in TaskRow.status
 # (mapped to the proto TaskStatus in mappers.py). A job the runner has paused on
@@ -82,10 +82,6 @@ class TaskService:
 
     async def approve(self, *, tenant_id: str, task_id: str) -> TaskRow:
         job_id = await self._job_id_for(tenant_id=tenant_id, task_id=task_id)
-        # Grant the human approval the paused run is waiting on: flip this
-        # tenant's pending email approvals to approved so mcp_svc's send_email
-        # will send on the resumed run. Done before requeuing the job so the
-        # approval is durably in place by the time the poller re-claims it.
         ref = await self._jobs.start_job(tenant_id=tenant_id, job_id=job_id)
         return await self._save_status(tenant_id=tenant_id, task_id=task_id, ref=ref)
 

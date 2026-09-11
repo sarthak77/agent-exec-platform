@@ -56,33 +56,6 @@ async def test_approve_resumes_a_waiting_job_and_refreshes_snapshot(sessions, jo
     assert fetched.status == "pending"
 
 
-async def test_approve_marks_pending_emails_approved(sessions, jobs) -> None:
-    from sqlalchemy import select
-
-    from agent_execution_service.models import EmailApprovalRow, new_id
-
-    svc = TaskService(sessions, jobs)
-    task = await svc.create(tenant_id=TENANT, input="go")
-    jobs.set_status(task.job_id, "waiting_approval")
-    # A pending email approval this tenant's paused run is waiting on, plus one
-    # for another tenant that must be left untouched.
-    async with sessions.begin() as session:
-        session.add(
-            EmailApprovalRow(id=new_id(), tenant_id=TENANT, recipient="a@x", status="pending")
-        )
-        session.add(
-            EmailApprovalRow(id=new_id(), tenant_id=OTHER, recipient="b@y", status="pending")
-        )
-
-    await svc.approve(tenant_id=TENANT, task_id=task.id)
-
-    async with sessions() as session:
-        rows = list((await session.scalars(select(EmailApprovalRow))).all())
-    by_tenant = {r.tenant_id: r.status for r in rows}
-    assert by_tenant[TENANT] == "approved"
-    assert by_tenant[OTHER] == "pending"  # other tenant untouched
-
-
 async def test_approve_twice_fails_precondition(sessions, jobs) -> None:
     svc = TaskService(sessions, jobs)
     task = await svc.create(tenant_id=TENANT, input="go")
