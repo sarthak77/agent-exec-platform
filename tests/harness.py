@@ -63,7 +63,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
 # tables are created by the services themselves; we only ensure the DBs exist.
 REQUIRED_DATABASES: tuple[str, ...] = ("agent_execution_service", "job_svc")
 
-# agent_execution_service gRPC address the seeder talks to.
+# agent_execution_service gRPC address the seeder and CRUD tests talk to.
 AES_ADDRESS = "localhost:50051"
 
 # job_svc's own database. Its `jobs.progress` column holds the agent's actual
@@ -71,13 +71,17 @@ AES_ADDRESS = "localhost:50051"
 # proto surfaces — tests that need to see a real answer read it directly.
 JOB_SVC_DATABASE = "job_svc"
 
+# agent_execution_service's own database (agents/tools/agent_tools/tasks). The
+# CRUD tests read it back directly to prove each gRPC call actually persisted.
+AES_DATABASE = "agent_execution_service"
+
 # Tenant the seed data belongs to (shared with the tests).
 SEED_TENANT_ID = "integration-tenant"
 
 # Sample business-domain tables (customers, invoices) the tests query
 # against, defined in one file and loaded into the database below.
 SAMPLE_DATA_SQL = Path(__file__).resolve().parent / "sql" / "sample_data.sql"
-SAMPLE_DATA_DATABASE = "agent_execution_service"
+SAMPLE_DATA_DATABASE = AES_DATABASE
 
 
 @dataclass(frozen=True)
@@ -207,6 +211,21 @@ class ServiceManager:
         finally:
             await conn.close()
 
+    async def _connect(self, database: str):
+        """Open a fresh asyncpg connection to one of the platform's Postgres
+        databases with the harness's admin credentials. The caller owns closing
+        it. Kept here so get_job/snapshot/reset_tenant share one connection path.
+        """
+        import asyncpg
+
+        return await asyncpg.connect(
+            host=self.pg_host,
+            port=self.pg_port,
+            user=self.pg_user,
+            password=self.pg_password,
+            database=database,
+        )
+
     async def get_job(self, job_id: str) -> dict:
         """Read a job's live status and checkpointed progress (plan + per-step
         outputs) straight out of job_svc's own database.
@@ -221,15 +240,7 @@ class ServiceManager:
         """
         import json
 
-        import asyncpg
-
-        conn = await asyncpg.connect(
-            host=self.pg_host,
-            port=self.pg_port,
-            user=self.pg_user,
-            password=self.pg_password,
-            database=JOB_SVC_DATABASE,
-        )
+        conn = await self._connect(JOB_SVC_DATABASE)
         try:
             row = await conn.fetchrow("SELECT status, progress FROM jobs WHERE id = $1", job_id)
         finally:
@@ -241,6 +252,86 @@ class ServiceManager:
             "status": row["status"],
             "progress": json.loads(progress) if isinstance(progress, str) else progress,
         }
+
+    # -- database snapshots (integration-test ground truth) ---------------------
+
+    async def snapshot(self, *, tenant_id: str) -> dict[str, list[dict]]:
+        """Read every platform table for one tenant straight out of Postgres and
+        return it as ``{table_name: [row_dict, ...]}``.
+
+        This is the CRUD integration tests' ground truth: after each gRPC call
+        they snapshot the real databases -- no mocks, no going through the
+        services -- and assert the row the RPC claimed to write is actually
+        there (or gone). Scoped to a single tenant so a test only sees its own
+        rows: ``agents``/``tools``/``tasks`` carry ``tenant_id`` directly, the
+        ``agent_tools`` join is scoped through its agents, and ``jobs`` lives in
+        job_svc's own database.
+        """
+        aes = await self._connect(AES_DATABASE)
+        try:
+            tools = await aes.fetch(
+                "SELECT * FROM tools WHERE tenant_id = $1 ORDER BY created_at", tenant_id
+            )
+            agents = await aes.fetch(
+                "SELECT * FROM agents WHERE tenant_id = $1 ORDER BY created_at", tenant_id
+            )
+            tasks = await aes.fetch(
+                "SELECT * FROM tasks WHERE tenant_id = $1 ORDER BY created_at", tenant_id
+            )
+            agent_tools = await aes.fetch(
+                "SELECT link.agent_id, link.tool_id FROM agent_tools AS link "
+                "JOIN agents AS a ON a.id = link.agent_id "
+                "WHERE a.tenant_id = $1 ORDER BY link.agent_id, link.tool_id",
+                tenant_id,
+            )
+        finally:
+            await aes.close()
+
+        jobs_conn = await self._connect(JOB_SVC_DATABASE)
+        try:
+            jobs = await jobs_conn.fetch(
+                "SELECT * FROM jobs WHERE tenant_id = $1 ORDER BY created_at", tenant_id
+            )
+        finally:
+            await jobs_conn.close()
+
+        return {
+            "tools": [dict(row) for row in tools],
+            "agents": [dict(row) for row in agents],
+            "agent_tools": [dict(row) for row in agent_tools],
+            "tasks": [dict(row) for row in tasks],
+            "jobs": [dict(row) for row in jobs],
+        }
+
+    async def reset_tenant(self, *, tenant_id: str) -> None:
+        """Delete every row owned by ``tenant_id`` from both databases so a CRUD
+        test starts from a known-empty baseline and the suite stays re-runnable
+        against a persistent database. Refuses the seeded tenant so it can never
+        wipe the shared seed/sample data -- it is only ever meant for a test's
+        own throwaway tenant.
+        """
+        if tenant_id == SEED_TENANT_ID:
+            raise ValueError("refusing to reset the seeded tenant")
+        aes = await self._connect(AES_DATABASE)
+        try:
+            # agent_tools carries no tenant_id; clear it via this tenant's agents
+            # first (the FK would cascade on agent delete too, but be explicit).
+            await aes.execute(
+                "DELETE FROM agent_tools WHERE agent_id IN "
+                "(SELECT id FROM agents WHERE tenant_id = $1)",
+                tenant_id,
+            )
+            await aes.execute("DELETE FROM tasks WHERE tenant_id = $1", tenant_id)
+            await aes.execute("DELETE FROM agents WHERE tenant_id = $1", tenant_id)
+            await aes.execute("DELETE FROM tools WHERE tenant_id = $1", tenant_id)
+        finally:
+            await aes.close()
+
+        jobs_conn = await self._connect(JOB_SVC_DATABASE)
+        try:
+            await jobs_conn.execute("DELETE FROM jobs WHERE tenant_id = $1", tenant_id)
+        finally:
+            await jobs_conn.close()
 
     # -- seed data --------------------------------------------------------------
 

@@ -7,8 +7,8 @@ Postgres databases, then drive it over the real wire protocols.
 
 | File | Purpose |
 | --- | --- |
-| `harness.py` | `ServiceManager` — DB init + start/stop of every service subprocess. |
-| `test_agent_execution.py` | JUnit-style test class; sample gRPC query against AES. |
+| `harness.py` | `ServiceManager` — DB init + start/stop of every service subprocess, plus `snapshot()`/`reset_tenant()` DB helpers. |
+| `test_agent_execution.py` | JUnit-style test class; basic CRUD tests + a sample gRPC query against AES. |
 | `conftest.py` | Puts the generated `aep.*` gRPC stubs on `sys.path`. |
 | `pyproject.toml` | Test-only dependencies (gRPC client, asyncpg, pytest). |
 | `sql/sample_data.sql` | `customers`/`invoices` sample tables the tests query against. |
@@ -45,6 +45,23 @@ under the `SEED_TENANT_ID` tenant (`integration-tenant`), which the tests query.
 
 Add new checks as methods on `TestAgentExecutionPlatform` (or new classes that
 follow the same `setup_class`/`teardown_class` pattern).
+
+## Basic CRUD tests
+
+`test_tool_crud` / `test_agent_crud` / `test_task_crud` / `test_job_crud` drive
+each resource through its create/read/update/delete surface over the real wire —
+**all via AES gRPC**, with **no mocking** and no direct calls to any downstream
+service. Jobs are driven through AES's task API (a task is AES's handle onto
+exactly one job): `CreateTask` creates the job, `GetTask` reads it, and
+`RetryTask` exercises the guarded job-mutation path (a freshly created, still
+`queued` job isn't retryable, so AES surfaces job_svc's guard as
+`FAILED_PRECONDITION`). After *every* call they read the underlying Postgres
+straight back via `ServiceManager.snapshot(tenant_id=...)` — a
+`{table: [row, ...]}` dump of the `agents`/`tools`/`agent_tools`/`tasks`/`jobs`
+tables for one tenant — and assert the row the RPC claimed to write is actually
+there (or gone). Each test runs under its own throwaway tenant and calls
+`ServiceManager.reset_tenant()` first, so the suite is re-runnable against a
+persistent database and the snapshots stay exact.
 
 ## Prerequisites
 
