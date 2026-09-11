@@ -10,7 +10,11 @@ from __future__ import annotations
 import re
 
 from autogen_agentchat.agents import AssistantAgent
-from autogen_agentchat.conditions import MaxMessageTermination, SourceMatchTermination
+from autogen_agentchat.conditions import (
+    MaxMessageTermination,
+    SourceMatchTermination,
+    TextMessageTermination,
+)
 from autogen_agentchat.teams import SelectorGroupChat
 
 from orchestrator.agents_repo import AgentSpec, list_agents_for_tenant
@@ -27,7 +31,11 @@ _SELECTOR_PROMPT = """You are coordinating a team of agents. The available roles
 Read the conversation so far:
 {history}
 
-Select the single next role from {participants} to respond. Return only that role's name.
+Select the single role from {participants} best suited to make progress on the
+user's most recent request. Prefer the one agent that owns the tools or domain
+the request needs, and keep picking that same agent until it has produced a
+complete natural-language answer. Once the request has been answered, do not pick
+another agent to restate or acknowledge it. Return only that role's name.
 """
 
 # A tool-less planner participant, added to every group chat. The job_svc runner
@@ -73,6 +81,27 @@ def _make_plan_selector(planner_slug: str):
         return None if planner_spoke else planner_slug
 
     return _select
+
+
+def _execution_termination(agent_slugs: list[str]):
+    """Termination for an execution (non-planning) turn.
+
+    A SelectorGroupChat otherwise runs until MaxMessageTermination even after an
+    agent has already answered, spending extra selector + agent round-trips (and,
+    on a slow provider, real wall-clock) restating a finished reply. So end the
+    turn the moment a domain agent emits a natural-language answer -- an AutoGen
+    TextMessage, as opposed to the ToolCallSummaryMessage / tool events a tool
+    call produces -- while still capping the turn with MaxMessageTermination.
+
+    The text-answer check is scoped to the agent slugs on purpose: the group-chat
+    manager runs the caller's own input (a source="user" TextMessage) through the
+    termination condition before anyone speaks, so an unscoped
+    TextMessageTermination would end the turn immediately, before any agent runs.
+    """
+    termination = MaxMessageTermination(settings.chat.max_messages)
+    for slug in agent_slugs:
+        termination = termination | TextMessageTermination(source=slug)
+    return termination
 
 
 def _slugify(name: str, taken: set[str]) -> str:
@@ -143,10 +172,12 @@ async def build_group_chat(
     clients: list[GatewayChatCompletionClient] = []
     workbenches: list[AgentToolWorkbench] = []
     participants = []
+    agent_slugs: list[str] = []
 
     for spec in agent_specs:
         slug = _slugify(spec.name, taken)
         name_by_slug[slug] = spec.name
+        agent_slugs.append(slug)
         client = GatewayChatCompletionClient(temperature=spec.llm_config_temperature, stub=stub)
         clients.append(client)
         workbench = AgentToolWorkbench(
@@ -169,7 +200,6 @@ async def build_group_chat(
     # re-plan instead of using a domain agent's tools. See is_planning above and
     # job_svc/runner.py's two phases (decompose, then execute each sub-prompt).
     selector_func = None
-    termination = MaxMessageTermination(settings.chat.max_messages)
     if is_planning:
         planner_slug = _slugify(_PLANNER_NAME, taken)
         name_by_slug[planner_slug] = _PLANNER_NAME
@@ -187,7 +217,13 @@ async def build_group_chat(
         # End the planner call the instant the planner speaks, so the run's final
         # message is the plan itself and no later speaker overwrites it (the
         # runner reads only that last non-empty message -- orchestrator_client.py).
-        termination = termination | SourceMatchTermination([planner_slug])
+        termination = MaxMessageTermination(settings.chat.max_messages) | SourceMatchTermination(
+            [planner_slug]
+        )
+    else:
+        # Execution call: stop as soon as a domain agent actually answers instead
+        # of padding out to the message cap. See _execution_termination.
+        termination = _execution_termination(agent_slugs)
 
     # SelectorGroupChat runs an LLM to pick the next speaker each turn; give it
     # its own deterministic client and account for its usage alongside the
