@@ -1,0 +1,199 @@
+syntax = "proto3";
+
+package aep.agent_execution.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service AgentExecutionService {
+  rpc CreateTool(CreateToolRequest) returns (CreateToolResponse);
+  rpc GetTool(GetToolRequest) returns (GetToolResponse);
+  rpc UpdateTool(UpdateToolRequest) returns (UpdateToolResponse);
+  rpc DeleteTool(DeleteToolRequest) returns (DeleteToolResponse);
+
+  rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse);
+  rpc GetAgent(GetAgentRequest) returns (GetAgentResponse);
+  rpc UpdateAgent(UpdateAgentRequest) returns (UpdateAgentResponse);
+  rpc DeleteAgent(DeleteAgentRequest) returns (DeleteAgentResponse);
+
+  rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse);
+  rpc GetTask(GetTaskRequest) returns (GetTaskResponse);
+  rpc ApproveTask(ApproveTaskRequest) returns (ApproveTaskResponse);
+  rpc RetryTask(RetryTaskRequest) returns (RetryTaskResponse);
+}
+
+message CreateToolRequest {
+  string name = 1;
+  optional string description = 2;
+}
+
+message CreateToolResponse {
+  Tool tool = 1;
+}
+
+message GetToolRequest {
+  GetToolRequestFilter filter = 1;
+}
+
+message GetToolRequestFilter {
+  repeated string ids = 1;
+}
+
+message GetToolResponse {
+  repeated Tool tools = 1;
+}
+
+message UpdateToolRequest {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+}
+
+message UpdateToolResponse {
+  Tool tool = 1;
+}
+
+message DeleteToolRequest {
+  string id = 1;
+}
+
+message DeleteToolResponse {
+  bool success = 1;
+}
+
+message CreateAgentRequest {
+  string name = 1;
+  string instructions = 2;
+  LLMConfig llm_config = 3;
+  ToolConfig tool_config = 4;
+}
+
+message CreateAgentResponse {
+  Agent agent = 1;
+}
+
+message GetAgentRequest {
+  GetAgentRequestFilter filter = 1;
+}
+
+message GetAgentRequestFilter {
+  repeated string ids = 1;
+}
+
+message GetAgentResponse {
+  repeated Agent agents = 1;
+}
+
+message UpdateAgentRequest {
+  string id = 1;
+  string name = 2;
+  string instructions = 3;
+  LLMConfig llm_config = 4;
+  ToolConfig tool_config = 5;
+}
+
+message UpdateAgentResponse {
+  Agent agent = 1;
+}
+
+message DeleteAgentRequest {
+  string id = 1;
+}
+
+message DeleteAgentResponse {
+  bool success = 1;
+}
+
+message CreateTaskRequest {
+  string input = 1;
+}
+
+message CreateTaskResponse {
+  Task task = 1;
+}
+
+message GetTaskRequest {
+  GetTaskRequestFilter filter = 1;
+}
+
+message GetTaskRequestFilter {
+  repeated string ids = 1;
+}
+
+message GetTaskResponse {
+  repeated Task tasks = 1;
+}
+
+message ApproveTaskRequest {
+  string task_id = 1;
+}
+
+message ApproveTaskResponse {
+  bool success = 1;
+}
+
+message RetryTaskRequest {
+  string task_id = 1;
+}
+
+message RetryTaskResponse {
+  bool success = 1;
+}
+
+message LLMConfig {
+  string name = 1;
+  float temperature = 2;
+}
+
+message ToolConfig {
+  repeated string ids = 1;
+}
+
+message Agent {
+  string id = 1;
+  string name = 2;
+  string instructions = 3;
+  LLMConfig llm_config = 4;
+  ToolConfig tool_config = 5;
+  AgentMetadata metadata = 6;
+}
+
+message AgentMetadata {
+  int32 version = 1;
+  google.protobuf.Timestamp created_at = 2;
+  google.protobuf.Timestamp updated_at = 3;
+}
+
+message Tool {
+  string id = 1;
+  string name = 2;
+  optional string description = 3;
+  ToolMetadata metadata = 4;
+}
+
+message ToolMetadata {
+  int32 version = 1;
+  google.protobuf.Timestamp created_at = 2;
+  google.protobuf.Timestamp updated_at = 3;
+}
+
+message Task {
+  string id = 1;
+  string input = 2;
+  TaskStatus status = 3;
+  TaskMetadata metadata = 4;
+  string job_id = 5;
+}
+
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  TASK_STATUS_PENDING = 1;
+  TASK_STATUS_RUNNING = 2;
+  TASK_STATUS_WAITING_APPROVAL = 3;
+  TASK_STATUS_COMPLETED = 4;
+  TASK_STATUS_FAILED = 5;
+}
+
+message TaskMetadata {
+  google.protobuf.Timestamp created_at = 1;
+  google.protobuf.Timestamp updated_at = 2;
+}

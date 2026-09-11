@@ -1,0 +1,23 @@
+[grpc]
+host = "0.0.0.0"
+port = 50054
+
+[model]
+# Groq via its OpenAI-compatible endpoint. The API key comes from the
+# GROQ_API_KEY env var (never config.toml); base_url defaults to the Groq
+# endpoint for provider "groq", so it can be omitted here.
+provider = "groq"
+name = "openai/gpt-oss-20b"
+max_tokens = 512
+temperature = 0.7
+timeout_seconds = 30
+
+[guardrails]
+max_input_chars = 8000
+blocklist = [
+    "ignore previous instructions",
+    "ignore all previous instructions",
+    "disregard previous instructions",
+    "reveal your system prompt",
+    "jailbreak",
+]

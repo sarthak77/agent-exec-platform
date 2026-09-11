@@ -1,0 +1,35 @@
+[project]
+name = "agent-execution-service"
+version = "0.1.0"
+description = "Edge API for the AI Agent Execution Platform: gRPC surface for agent/tool CRUD and task submit/read/approve/retry."
+authors = [
+    { name = "sarthak77", email = "sarthak02singhal@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "grpcio>=1.75",
+    "grpcio-reflection>=1.83.1",
+    "protobuf>=6.32",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.30",
+]
+
+[dependency-groups]
+dev = [
+    "grpcio-tools>=1.75",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    # In-memory async DB for tests, so the suite needs no live Postgres.
+    "aiosqlite>=0.20",
+]
+
+[project.scripts]
+agent-execution-service = "agent_execution_service.main:run"
+
+[build-system]
+requires = ["uv_build>=0.10.11,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

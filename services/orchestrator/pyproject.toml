@@ -1,0 +1,39 @@
+[project]
+name = "orchestrator"
+version = "0.1.0"
+description = "Basic AutoGen orchestrator: runs a group chat over all tenant agents plus an MCP tool-catalog connector, routing inference through the gateway."
+authors = [
+    { name = "sarthak77", email = "sarthak02singhal@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "grpcio>=1.75",
+    "grpcio-reflection>=1.68,<1.72",
+    "protobuf>=5.29.3,<5.30.dev0",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.30",
+    "autogen-agentchat>=0.4",
+    "autogen-core>=0.4",
+    # 2.x API: streamable_http_client yields (read, write) and
+    # create_mcp_http_client lives under mcp.shared (see mcp_connector.py).
+    # 1.x names/return shapes differ; <3 guards the private-module import.
+    "mcp>=2.0,<3",
+    "autogen-ext>=0.7.5",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[project.scripts]
+orchestrator = "orchestrator.main:run"
+
+[build-system]
+requires = ["uv_build>=0.10.11,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

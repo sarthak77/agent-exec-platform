@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package aep.job.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service JobService {
+  rpc CreateJob(CreateJobRequest) returns (CreateJobResponse);
+  rpc GetJob(GetJobRequest) returns (GetJobResponse);
+  rpc UpdateJob(UpdateJobRequest) returns (UpdateJobResponse);
+  rpc RetryJob(RetryJobRequest) returns (RetryJobResponse);
+}
+
+message CreateJobRequest {
+  JobType type = 1;
+  JobSpec spec = 2;
+  optional int32 max_attempts = 3;
+}
+
+message CreateJobResponse {
+  Job job = 1;
+}
+
+message GetJobRequest {
+  GetJobRequestFilter filter = 1;
+}
+
+message GetJobRequestFilter {
+  repeated string ids = 1;
+  repeated JobStatus statuses = 2;
+  repeated JobType types = 3;
+}
+
+message GetJobResponse {
+  repeated Job jobs = 1;
+}
+
+message UpdateJobRequest {
+  string id = 1;
+  JobStatus status = 2;
+}
+
+message UpdateJobResponse {
+  Job job = 1;
+}
+
+message RetryJobRequest {
+  string id = 1;
+}
+
+message RetryJobResponse {
+  Job job = 1;
+}
+
+enum JobStatus {
+  JOB_STATUS_UNSPECIFIED = 0;
+  JOB_STATUS_QUEUED = 1;
+  JOB_STATUS_RUNNING = 2;
+  JOB_STATUS_SUCCEEDED = 3;
+  JOB_STATUS_FAILED = 4;
+  JOB_STATUS_DEAD = 5; // retries exhausted
+  JOB_STATUS_CANCELLED = 6;
+  JOB_STATUS_WAITING_APPROVAL = 7; // paused mid-run awaiting a human approval
+}
+
+message Job {
+  string id = 1;
+  JobType type = 2;
+  JobSpec spec = 3;
+  JobStatus status = 4;
+  int32 attempts = 5;
+  int32 max_attempts = 6;
+  JobMetadata metadata = 9;
+}
+
+enum JobType {
+  JOB_TYPE_UNSPECIFIED = 0;
+  JOB_TYPE_AGENT_EXECUTION = 1;
+  JOB_TYPE_MUTATION = 3;
+}
+
+message JobSpec {
+  oneof spec {
+    AgentExecutionSpec agent_execution_spec = 1;
+  }
+}
+
+message AgentExecutionSpec {
+  string name = 1;
+  string instructions = 2;
+  LLMConfig llm_config = 3;
+  ToolConfig tool_config = 4;
+}
+
+message LLMConfig {
+  string name = 1;
+  float temperature = 2;
+}
+
+message ToolConfig {
+  repeated string ids = 1;
+}
+
+message JobMetadata {
+  google.protobuf.Timestamp created_at = 1;
+  google.protobuf.Timestamp updated_at = 2;
+}

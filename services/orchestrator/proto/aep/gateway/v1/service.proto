@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package aep.gateway.v1;
+
+// The only path to LLMs in the platform: input guardrails, then a forward
+// to the single configured model. Shape mirrors llm-model-service's
+// ChatRequest/ChatResponse (model_config + messages + token_usage), plus a
+// minimal single-function-call form of tool calling: the caller passes tool
+// schemas, the model may answer with tool_calls, the caller executes them
+// (e.g. via mcp_svc) and feeds the results back as role="tool" messages.
+service GatewayService {
+  rpc Chat(ChatRequest) returns (ChatResponse);
+}
+
+message ChatRequest {
+  ModelConfig model_config = 1;   // optional per-call override of temperature/max_tokens
+  repeated Message messages = 2;
+  repeated Tool tools = 3;         // function schemas the model may call; empty = no tools
+  optional string tool_choice = 4; // "auto" | "none" | "required"; unset = provider default
+}
+
+message ModelConfig {
+  optional float temperature = 1;
+  optional int32 max_tokens = 2;
+}
+
+// A function the model may call. `parameters` is a JSON Schema object encoded
+// as a JSON string (kept opaque here so the gateway forwards it verbatim).
+message Tool {
+  string name = 1;
+  string description = 2;
+  string parameters = 3;
+}
+
+// One function call the model requested. `arguments` is a JSON string as the
+// model produced it (not necessarily schema-valid).
+message ToolCall {
+  string id = 1;
+  string name = 2;
+  string arguments = 3;
+}
+
+message Message {
+  string role = 1;                  // system | user | assistant | developer | tool
+  string content = 2;
+  repeated ToolCall tool_calls = 3; // set on assistant turns that call tools
+  optional string tool_call_id = 4; // set on role="tool" result messages
+}
+
+message ChatResponse {
+  Message message = 1;
+  TokenUsage token_usage = 2;
+  string finish_reason = 3;         // "tool_calls" when the model asked to call tools
+  repeated ToolCall tool_calls = 4; // mirror of message.tool_calls, for convenience
+}
+
+message TokenUsage {
+  int64 prompt_tokens = 1;
+  int64 completion_tokens = 2;
+  int64 total_tokens = 3;
+}

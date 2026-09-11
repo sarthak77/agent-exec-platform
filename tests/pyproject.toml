@@ -1,0 +1,22 @@
+[project]
+name = "aep-integration-tests"
+version = "0.1.0"
+description = "End-to-end integration tests for the Agent Execution Platform: boots every service + Postgres, then drives them over their real wire protocols (gRPC / HTTP)."
+requires-python = ">=3.13"
+dependencies = [
+    # gRPC client used to talk to the running services. protobuf is pinned to
+    # match the stubs generated under agent_execution_service/src/aep (built
+    # with protobuf 6.x), which conftest.py puts on sys.path.
+    "grpcio>=1.75",
+    "protobuf>=6.32",
+    # Used at startup to (idempotently) create the per-service databases, and
+    # by tests that read job_svc's own database to see an agent's real output.
+    "asyncpg>=0.30",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+# Async test methods (grpc.aio client calls) run without an explicit marker.
+asyncio_mode = "auto"

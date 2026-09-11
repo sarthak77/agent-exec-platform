@@ -1,0 +1,14 @@
+[grpc]
+host = "0.0.0.0"
+port = 50051
+
+[postgres]
+host = "localhost"
+port = 5432
+user = "postgres"
+password = "postgres"
+database = "agent_execution_service"
+
+[job_svc]
+host = "localhost"
+port = 50052

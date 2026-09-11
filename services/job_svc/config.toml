@@ -1,0 +1,28 @@
+[grpc]
+host = "0.0.0.0"
+port = 50052
+
+[postgres]
+host = "localhost"
+port = 5432
+user = "postgres"
+password = "postgres"
+database = "job_svc"
+
+[jobs]
+# Retry budget applied to a CreateJob that does not specify max_attempts.
+default_max_attempts = 3
+
+[poller]
+# Background loop that claims queued jobs and hands them to the runner.
+enabled = true
+interval_seconds = 5.0
+batch_size = 10
+# Claim lease TTL (seconds). A job stuck in `running` longer than this is
+# treated as abandoned (crashed pod) and requeued. Keep above max job runtime.
+lease_seconds = 300.0
+
+[orchestrator]
+# The orchestrator service the runner calls to decompose and execute prompts.
+host = "localhost"
+port = 50053

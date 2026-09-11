@@ -1,0 +1,22 @@
+[http]
+host = "0.0.0.0"
+port = 8003
+
+[postgres]
+# Dev defaults. Override per-field from the environment in real deployments
+# (MCP_SVC_POSTGRES_PASSWORD, MCP_SVC_POSTGRES_HOST, ...) so credentials stay
+# out of source control.
+host = "localhost"
+port = 5432
+user = "postgres"
+password = "postgres"
+database = "agent_execution_service"
+
+[security]
+# Host/Origin allowlists for the streamable-HTTP transport. Leave both empty
+# when the service sits behind a trusted edge (DNS-rebinding/Origin checks stay
+# off); populate either to turn protection on. Example:
+#   allowed_hosts = ["mcp.internal:8003"]
+#   allowed_origins = ["https://app.example.com"]
+allowed_hosts = []
+allowed_origins = []
