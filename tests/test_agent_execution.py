@@ -359,6 +359,120 @@ class TestAgentExecutionPlatform:
         assert jobs[0]["status"] == "dead"
         assert jobs[0]["retry_count"] == 3
 
+    async def test_mutating_tool_pauses_for_approval_then_completes(self) -> None:
+        """The approval flow: a mutating tool pauses the job for human approval,
+        and ApproveTask resumes it to completion.
+
+        The gate lives in the orchestrator's AgentToolWorkbench and is driven
+        purely by a tool's catalog `mutating` flag (an unapproved mutating call
+        is refused before it ever reaches mcp_svc), so this marks query_database
+        -- which has a real mcp_svc execution binding -- as mutating to exercise
+        the gate end to end without depending on a tool that has no binding. The
+        agent's first tool call is refused pending approval -> job_svc parks the
+        job at `waiting_approval` (TASK_STATUS_WAITING_APPROVAL); ApproveTask
+        requeues it and the resumed run is allowed to make the call, so the task
+        reaches COMPLETED. Its own throwaway tenant keeps it from disturbing the
+        (non-mutating) query_database that test_query_database_tool_auto_executes
+        relies on.
+        """
+        tenant = "e2e-approval-tenant"
+        metadata = (("x-tenant-id", tenant),)
+        await self.manager.reset_tenant(tenant_id=tenant)
+
+        async with grpc.aio.insecure_channel(AES_ADDRESS) as channel:
+            stub = service_pb2_grpc.AgentExecutionServiceStub(channel)
+
+            tool = await stub.CreateTool(
+                service_pb2.CreateToolRequest(
+                    name="query_database",
+                    description=(
+                        "Run a read-only SQL SELECT query against the "
+                        "customers/invoices tables and return the matching rows."
+                    ),
+                    mutating=True,
+                ),
+                metadata=metadata,
+            )
+            # Two agents, both granted the mutating tool. The execute-phase
+            # SelectorGroupChat requires >=2 participants (the tool-less planner
+            # joins only the planning turn, so a single-agent tenant can't
+            # execute), and giving both the same tool makes the pause
+            # deterministic: whichever agent the selector routes to makes the
+            # gated call.
+            for agent_name in ("Data Analyst", "Invoice Analyst"):
+                await stub.CreateAgent(
+                    service_pb2.CreateAgentRequest(
+                        name=agent_name,
+                        instructions=(
+                            "Answer questions about customers and invoices using the "
+                            "query_database tool to run SQL SELECT queries."
+                        ),
+                        llm_config=service_pb2.LLMConfig(
+                            name="openai/gpt-oss-20b", temperature=0.2
+                        ),
+                        tool_config=service_pb2.ToolConfig(ids=[tool.tool.id]),
+                    ),
+                    metadata=metadata,
+                )
+
+            created = await stub.CreateTask(
+                service_pb2.CreateTaskRequest(
+                    input="How many invoices are in the database? Reply with just the number."
+                ),
+                metadata=metadata,
+            )
+            task_id = created.task.id
+
+            async def task_status() -> int:
+                fetched = await stub.GetTask(
+                    service_pb2.GetTaskRequest(
+                        filter=service_pb2.GetTaskRequestFilter(ids=[task_id])
+                    ),
+                    metadata=metadata,
+                )
+                return fetched.tasks[0].status
+
+            # 1) The mutating call must pause the job pending approval. Poll for
+            # any settled/paused status so a run that never pauses fails fast
+            # (rather than burning the whole deadline).
+            settled = {
+                service_pb2.TASK_STATUS_WAITING_APPROVAL,
+                service_pb2.TASK_STATUS_COMPLETED,
+                service_pb2.TASK_STATUS_FAILED,
+            }
+            deadline = time.monotonic() + 180.0
+            status = created.task.status
+            while status not in settled:
+                if time.monotonic() > deadline:
+                    pytest.fail(f"task {task_id} never paused for approval (status={status})")
+                await asyncio.sleep(1.0)
+                status = await task_status()
+            assert status == service_pb2.TASK_STATUS_WAITING_APPROVAL, status
+
+            # 2) Approve and drive to completion, re-approving if a later mutating
+            # step in a multi-step plan pauses too. ApproveTask requeues the paused
+            # job (waiting_approval -> queued); the poller re-runs it from its
+            # checkpoint with the mutating call now permitted.
+            approvals = 0
+            deadline = time.monotonic() + 180.0
+            while status not in (
+                service_pb2.TASK_STATUS_COMPLETED,
+                service_pb2.TASK_STATUS_FAILED,
+            ):
+                if time.monotonic() > deadline:
+                    pytest.fail(f"task {task_id} did not finish after approval (status={status})")
+                if status == service_pb2.TASK_STATUS_WAITING_APPROVAL:
+                    resp = await stub.ApproveTask(
+                        service_pb2.ApproveTaskRequest(task_id=task_id), metadata=metadata
+                    )
+                    assert resp.success is True
+                    approvals += 1
+                await asyncio.sleep(1.0)
+                status = await task_status()
+
+            assert status == service_pb2.TASK_STATUS_COMPLETED, status
+            assert approvals >= 1
+
     async def test_query_database_tool_auto_executes(self) -> None:
         """Add a tool + agent, then fire a single CreateTask gRPC call at AES
         and let the already-running pipeline execute it on its own.
