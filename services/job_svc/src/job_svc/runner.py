@@ -65,14 +65,17 @@ logger = logging.getLogger(__name__)
 TypeRunner = Callable[[JobRow], Awaitable[None]]
 
 # The planner turn: instruct the orchestrator to return an ordered list of
-# simple, independently-executable sub-prompts. We ask for a JSON array for
-# reliable parsing but tolerate a plain (numbered/bulleted) list as a fallback.
+# simple, independently-executable sub-prompts. We ask for the FEWEST steps
+# (each agent turn can make several tool calls, so a lookup-and-compute is one
+# step, not many) to keep execution short, and for a JSON array for reliable
+# parsing -- but tolerate a plain (numbered/bulleted) list as a fallback.
 _PLANNER_INSTRUCTION = (
-    "You are a task planner. Break the user's request into a list of simple "
-    "prompts, each one self-contained and independently executable by an agent, "
-    "ordered so they can be run in sequence. Return ONLY a JSON array of "
-    "strings (each string one prompt), in the order they should be executed, "
-    "with no surrounding text."
+    "You are a task planner. Break the user's request into the fewest "
+    "self-contained sub-prompts needed, each independently executable by one "
+    "agent that may make several tool calls; prefer a SINGLE prompt when the "
+    "whole request can be answered in one agent turn. Return ONLY a JSON array "
+    "of strings (each string one prompt), in execution order, with no "
+    "surrounding text."
 )
 
 _BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s*")

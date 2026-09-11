@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 from mcp.types import TextContent
@@ -114,7 +115,7 @@ class _FakeSessionObj:
 
 
 def _patch_build(monkeypatch, sink: list[str]) -> None:
-    async def fake_build(tenant_id, approved=False):  # noqa: ANN001
+    async def fake_build(tenant_id, approved=False, is_planning=False):  # noqa: ANN001
         return _FakeSessionObj(sink)
 
     monkeypatch.setattr(run, "build_group_chat", fake_build)
@@ -135,7 +136,7 @@ async def test_run_chat_uses_stop_reason_when_no_approval(monkeypatch) -> None:
 async def test_run_chat_forwards_approved_to_build_group_chat(monkeypatch) -> None:
     seen: list[bool] = []
 
-    async def fake_build(tenant_id, approved=False):  # noqa: ANN001
+    async def fake_build(tenant_id, approved=False, is_planning=False):  # noqa: ANN001
         seen.append(approved)
         return _FakeSessionObj([])
 
@@ -144,6 +145,30 @@ async def test_run_chat_forwards_approved_to_build_group_chat(monkeypatch) -> No
     await run.run_chat("t1", [], approved=True)
 
     assert seen == [True]
+
+
+async def test_run_chat_flags_planning_only_when_a_system_message_is_present(
+    monkeypatch,
+) -> None:
+    # is_planning gates the tool-less planner participant: a decomposition turn
+    # carries a system-role message, an execution (sub-prompt) turn does not.
+    seen: list[bool] = []
+
+    async def fake_build(tenant_id, approved=False, is_planning=False):  # noqa: ANN001
+        seen.append(is_planning)
+        return _FakeSessionObj([])
+
+    monkeypatch.setattr(run, "build_group_chat", fake_build)
+
+    planning = [
+        SimpleNamespace(role="system", content="plan this"),
+        SimpleNamespace(role="user", content="total overdue for Acme?"),
+    ]
+    execution = [SimpleNamespace(role="user", content="run the query")]
+    await run.run_chat("t1", planning)
+    await run.run_chat("t1", execution)
+
+    assert seen == [True, False]
 
 
 # --- mutating-tool approval gate (AgentToolWorkbench) -----------------------

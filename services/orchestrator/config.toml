@@ -12,15 +12,11 @@ database = "agent_execution_service"
 [gateway]
 host = "localhost"
 port = 50054
-timeout_seconds = 30
+timeout_seconds = 75
 
 [mcp]
 url = "http://localhost:8003/mcp"
 timeout_seconds = 10
 
 [chat]
-# Bounds total messages per group-chat turn. Tool-using flows (agent -> tool
-# call -> tool result -> follow-up) spend several messages per action, so this
-# is sized for a multi-step tool sequence (e.g. retrieve -> draft -> send), not
-# just a single question/answer.
-max_messages = 20
+max_messages = 6

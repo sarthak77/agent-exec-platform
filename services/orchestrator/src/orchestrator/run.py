@@ -67,7 +67,12 @@ def _to_transcript(
 async def run_chat(
     tenant_id: str, messages: Sequence[InputMessage], approved: bool = False
 ) -> ChatResult:
-    session = await build_group_chat(tenant_id, approved=approved)
+    # A decomposition ("planner") turn carries the planner instruction as a
+    # system-role input message (see job_svc/runner.py); a sub-prompt execution
+    # turn carries only a user message. The tool-less planner participant is
+    # added only for the former (see build_group_chat).
+    is_planning = any(getattr(m, "role", "") == "system" for m in messages)
+    session = await build_group_chat(tenant_id, approved=approved, is_planning=is_planning)
     task = [TextMessage(content=m.content, source=m.role or "user") for m in messages]
 
     # output_task_messages=False keeps the caller's echoed input out of the

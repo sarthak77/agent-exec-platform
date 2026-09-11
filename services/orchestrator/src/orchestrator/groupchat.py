@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 from autogen_agentchat.agents import AssistantAgent
-from autogen_agentchat.conditions import MaxMessageTermination
+from autogen_agentchat.conditions import MaxMessageTermination, SourceMatchTermination
 from autogen_agentchat.teams import SelectorGroupChat
 
 from orchestrator.agents_repo import AgentSpec, list_agents_for_tenant
@@ -29,6 +29,50 @@ Read the conversation so far:
 
 Select the single next role from {participants} to respond. Return only that role's name.
 """
+
+# A tool-less planner participant, added to every group chat. The job_svc runner
+# first asks the orchestrator to decompose a job's prompt into an ordered list of
+# sub-prompts (see job_svc/runner.py). That turn must be answered by an agent
+# that *cannot* call tools: a tool-enabled domain agent tends to just execute the
+# request, so the runner gets back a tool result where it expected a JSON array
+# of sub-prompts. This agent only ever plans. See _make_plan_selector for how it
+# is picked and build_group_chat for the matching termination.
+_PLANNER_NAME = "Planner"
+_PLANNER_SYSTEM_MESSAGE = (
+    "You are the team's task planner. Break the user's request into the FEWEST "
+    "self-contained sub-prompts needed, each one carried out end to end by a "
+    "single tool-using agent (an agent may make several tool calls within one "
+    "sub-prompt). Prefer a SINGLE sub-prompt whenever the whole request can be "
+    "answered in one agent turn; do not split a single lookup-and-compute into "
+    "separate steps. Return ONLY a JSON array of strings (one sub-prompt per "
+    "element), with no surrounding text. You have no tools: never execute the "
+    "task or call a tool, only produce the plan."
+)
+_PLANNER_DESCRIPTION = (
+    "Task planner: decomposes the initial request into an ordered plan (a JSON "
+    "array of sub-prompts). Has no tools and never executes a step -- pick it only "
+    "to produce the plan, never to carry out a concrete sub-task."
+)
+
+
+def _make_plan_selector(planner_slug: str):
+    """Speaker-selection override for the SelectorGroupChat.
+
+    A decomposition ("planner") call arrives with the planner instruction as a
+    system-role input message; a sub-prompt execution call carries only a user
+    message. So hand the first turn of a planner call to the tool-less planner --
+    deterministically, so a tool-using agent can't pre-empt it -- and defer every
+    other selection to the LLM selector by returning None.
+    """
+
+    def _select(thread) -> str | None:
+        is_planning = any(getattr(m, "source", None) == "system" for m in thread)
+        if not is_planning:
+            return None
+        planner_spoke = any(getattr(m, "source", None) == planner_slug for m in thread)
+        return None if planner_spoke else planner_slug
+
+    return _select
 
 
 def _slugify(name: str, taken: set[str]) -> str:
@@ -85,7 +129,9 @@ class GroupChatSession:
         return [item for wb in self._workbenches for item in wb.pending_approvals]
 
 
-async def build_group_chat(tenant_id: str, approved: bool = False) -> GroupChatSession:
+async def build_group_chat(
+    tenant_id: str, approved: bool = False, is_planning: bool = False
+) -> GroupChatSession:
     async with Sessions() as session:
         agent_specs = await list_agents_for_tenant(session, tenant_id)
     if not agent_specs:
@@ -117,21 +163,44 @@ async def build_group_chat(tenant_id: str, approved: bool = False) -> GroupChatS
             )
         )
 
+    # The tool-less planner is a participant ONLY on a decomposition ("planner")
+    # call. Kept out of execution calls entirely so the LLM selector can't pick
+    # it to answer a concrete sub-prompt -- where, having no tools, it would just
+    # re-plan instead of using a domain agent's tools. See is_planning above and
+    # job_svc/runner.py's two phases (decompose, then execute each sub-prompt).
+    selector_func = None
+    termination = MaxMessageTermination(settings.chat.max_messages)
+    if is_planning:
+        planner_slug = _slugify(_PLANNER_NAME, taken)
+        name_by_slug[planner_slug] = _PLANNER_NAME
+        planner_client = GatewayChatCompletionClient(temperature=0.0, stub=stub)
+        clients.append(planner_client)
+        participants.append(
+            AssistantAgent(
+                planner_slug,
+                model_client=planner_client,
+                system_message=_PLANNER_SYSTEM_MESSAGE,
+                description=_PLANNER_DESCRIPTION,
+            )
+        )
+        selector_func = _make_plan_selector(planner_slug)
+        # End the planner call the instant the planner speaks, so the run's final
+        # message is the plan itself and no later speaker overwrites it (the
+        # runner reads only that last non-empty message -- orchestrator_client.py).
+        termination = termination | SourceMatchTermination([planner_slug])
+
     # SelectorGroupChat runs an LLM to pick the next speaker each turn; give it
     # its own deterministic client and account for its usage alongside the
     # participants'.
     selector_client = GatewayChatCompletionClient(temperature=0.0, stub=stub)
     clients.append(selector_client)
 
-    # MaxMessageTermination bounds *total* messages in the thread. Input
-    # messages are excluded from the response transcript (see run.py) but
-    # still counted here, so size max_messages with the participant count and
-    # expected input in mind.
     team = SelectorGroupChat(
         participants,
         model_client=selector_client,
-        termination_condition=MaxMessageTermination(settings.chat.max_messages),
+        termination_condition=termination,
         selector_prompt=_SELECTOR_PROMPT,
         allow_repeated_speaker=True,
+        selector_func=selector_func,
     )
     return GroupChatSession(team, name_by_slug, clients, workbenches)
