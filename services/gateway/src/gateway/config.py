@@ -25,6 +25,10 @@ _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.toml"
 _PROVIDERS: dict[str, tuple[str, str | None]] = {
     "openai": ("OPENAI_API_KEY", None),
     "groq": ("GROQ_API_KEY", "https://api.groq.com/openai/v1"),
+    # Sample test provider: OpenCode Zen's free public tier (Responses API),
+    # served by ZenProvider rather than the OpenAI SDK. Key defaults to
+    # "public" (see below), so OPENCODE_API_KEY is optional.
+    "opencode": ("OPENCODE_API_KEY", "https://opencode.ai/zen/v1"),
 }
 
 
@@ -73,6 +77,10 @@ def _load(path: Path) -> Settings:
     env_key, default_base_url = _PROVIDERS[provider]
 
     api_key = os.environ.get(env_key)
+    # OpenCode Zen's free tier authenticates every request as `Bearer public`,
+    # so the env var is optional for this test provider -- default to "public".
+    if not api_key and provider == "opencode":
+        api_key = "public"
     if not api_key:
         raise RuntimeError(
             f"{env_key} env var must be set for provider {provider!r} "

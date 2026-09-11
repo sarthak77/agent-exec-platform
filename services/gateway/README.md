@@ -146,6 +146,23 @@ than a request that fails deep inside a provider call.
   call — no aggregation, budgeting, or persistence happens on the
   gateway side; that's left entirely to the caller (today, nothing
   actually persists it — see "Cost and latency" below).
+- **Sample test provider (`provider_zen.py`)**: a `ZenProvider` that talks
+  to OpenCode Zen's free public tier for smoke-testing without an
+  OpenAI/Groq key. Unlike `OpenAIProvider`, it hits the **Responses API**
+  (`POST /zen/v1/responses`) directly over `httpx2`, sending the
+  `Bearer public` key (defaulted — no env var needed) and the
+  `x-opencode-*` / `User-Agent` headers verbatim. Enable it by setting
+  `[model]` in `config.toml` to `provider = "opencode"`, `name =
+  "muse-spark-1.3-contributor-free"`. **Tool calling is fully supported on
+  this path**: the message list is rendered as the Responses API `input`
+  array (a `role="tool"` turn becomes a `function_call_output` item, an
+  assistant turn's `tool_calls` become `function_call` items, both keyed on
+  the same `call_id`), tool schemas use the Responses API's flat `function`
+  shape, and any `function_call` items in the response's `output` array are
+  surfaced back as `ChatResponse.tool_calls` — so the same tool-calling
+  round trip as `OpenAIProvider`. `max_output_tokens` is intentionally not
+  forwarded: Zen's reasoning models spend the output budget on hidden
+  reasoning, so a small cap would truncate a tool call or the final answer.
 
 ## Failure handling
 

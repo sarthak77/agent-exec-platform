@@ -12,6 +12,7 @@ from grpc_reflection.v1alpha import reflection
 from aep.gateway.v1 import service_pb2, service_pb2_grpc
 from gateway.config import get_settings
 from gateway.provider import OpenAIProvider
+from gateway.provider_zen import ZenProvider
 from gateway.servicer import GatewayServicer
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,12 @@ async def serve() -> None:
     logging.basicConfig(level=logging.INFO)
 
     settings = get_settings()
-    provider = OpenAIProvider(api_key=settings.api_key, model=settings.model)
+    # The opencode test provider speaks the Zen Responses API directly; every
+    # other provider is OpenAI-wire-compatible and goes through the SDK.
+    if settings.model.provider == "opencode":
+        provider = ZenProvider(api_key=settings.api_key, model=settings.model)
+    else:
+        provider = OpenAIProvider(api_key=settings.api_key, model=settings.model)
     servicer = GatewayServicer(provider, guardrails=settings.guardrails)
 
     server = grpc.aio.server()

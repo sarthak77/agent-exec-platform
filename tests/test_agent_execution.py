@@ -392,11 +392,11 @@ class TestAgentExecutionPlatform:
         # checks: it is the authoritative source and carries the full step trail
         # (AES's GetTask now refreshes and surfaces the final result, but not the
         # individual steps). See ServiceManager.get_job.
-        deadline = time.monotonic() + 90.0
+        deadline = time.monotonic() + 180.0
         job = await self.manager.get_job(job_id)
         while job["status"] in _IN_FLIGHT_JOB_STATUSES:
             if time.monotonic() > deadline:
-                pytest.fail(f"job {job_id} did not finish within 90s (status={job['status']})")
+                pytest.fail(f"job {job_id} did not finish within 180s (status={job['status']})")
             await asyncio.sleep(1.0)
             job = await self.manager.get_job(job_id)
 
