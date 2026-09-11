@@ -13,13 +13,13 @@ Postgres databases, then drive it over the real wire protocols.
 | `pyproject.toml` | Test-only dependencies (gRPC client, asyncpg, pytest). |
 | `sql/sample_data.sql` | `customers`/`invoices` sample tables the tests query against. |
 
-## Lifecycle (JUnit mapping)
+## Lifecycle
 
 The suite is organised as a class so the fleet starts once and is shared:
 
-- `setup_class`  → JUnit `@BeforeAll`: `init_db()`, `load_sample_data()`, `start_all()`, then `seed_data()`.
-- `teardown_class` → JUnit `@AfterAll`: `stop_all()`.
-- test methods → JUnit `@Test`.
+- `setup_class` : `init_db()`, `load_sample_data()`, `start_all()`, then `seed_data()`.
+- `teardown_class` : `stop_all()`.
+- test methods.
 
 ## Sample data
 
@@ -69,6 +69,10 @@ not validated until an actual model call is made).
 cd tests
 uv run pytest -v
 ```
+
+## Known Limitations
+- Couldn't test e2e the entire flow.
+- Missing single docker based setup. (Was facing some permission issues)
 
 Per-service logs for a run are written to `tests/.logs/<service>.log`; on a
 startup failure the harness prints the tail of the offending service's log.

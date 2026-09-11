@@ -157,62 +157,29 @@ log fields (tenant id, request id, etc. are not attached to log records),
 and no distributed tracing — this is intentionally a "basic" implementation;
 see Known limitations.
 
-## Run
+## Assumptions
 
-```sh
-uv sync
-uv run agent-execution-service
-```
+These are the deliberate simplifications this "basic" implementation makes;
+each is a place a fuller build would grow structure.
 
-Needs Postgres reachable (see `[postgres]` in `config.toml`) and `job_svc`
-listening on its configured port for `CreateTask`/`ApproveTask`/`RetryTask`
-to succeed; `GetAgent`/`GetTool` work standalone. `init_models()` runs
-`Base.metadata.create_all` on startup, so tables are created automatically —
-there is no separate migration tool. Config (gRPC host/port, Postgres,
-`job_svc` address) lives in `config.toml`; override its path with
-`AEP_CONFIG_FILE`, or override any individual field with an
-`AEP_<SECTION>_<FIELD>` environment variable (e.g. `AEP_POSTGRES_PASSWORD`).
+- **Tools are catalog pointers to a built-in handler** — a `tools` row
+  (`name`, `description`, `mutating`) carries no input schema or execution
+  config; it names an execution binding that already exists in code in
+  `mcp_svc` (`handlers.py`'s `_HANDLERS`, e.g. `http_request`,
+  `query_database`). Creating a tool whose `name` has no matching handler
+  yields a catalog entry that lists but can't execute ("no execution
+  binding"). Generic, code-/data-driven tools (arbitrary input schema +
+  executor kind/config, or an `mcp_proxy` to external MCP servers) are a
+  later phase.
+- **An agent is instructions + granted tools** — an `Agent` is a `name`,
+  free-text `instructions`, an `LLMConfig` (model name + temperature), and a
+  set of granted `tool_config.ids`; nothing more. There is no per-agent
+  memory, persisted conversation state, sub-agents, or routing logic —
+  run-time behaviour is entirely the instructions plus the tools it is
+  allowed to call, and every agent must be granted at least one tool.
+- **A task is a single text input** — `CreateTask` takes one free-text
+  `input` string as the entire task spec, forwarded verbatim as the job's
+  `AgentExecutionSpec.instructions`. There are no structured parameters,
+  attachments, explicit target-agent selection, or multi-turn conversation
+  state: one task = one prompt = one job.
 
-## Proto
-
-`proto/aep/agent_execution/v1/service.proto` defines
-`AgentExecutionService`; `proto/aep/job/v1/service.proto` is a vendored copy
-of job_svc's proto, used only to generate the client stub this service calls
-out with. After editing either, regenerate stubs with `./scripts/gen_proto.sh`.
-
-## Test
-
-```sh
-uv run --group dev pytest
-```
-
-Tests run against SQLite in-memory (`aiosqlite`, see `tests/conftest.py`) with
-a `FakeJobGateway` standing in for job_svc — no live Postgres or job_svc
-needed. Coverage: `test_servicer.py` (RPC-level error mapping),
-`test_task_service.py` (task/job delegation, tenant scoping, concurrent
-create/approve races), `test_validators.py`, `test_mappers.py`,
-`test_job_client.py` (gRPC status -> typed error translation against a fake
-stub).
-
-## Known limitations
-
-- **Task submission ignores agent selection.** `CreateTaskRequest` only
-  carries `input`; `TaskService.create` submits a job with
-  `AgentExecutionSpec(instructions=input)` and nothing else — no agent id,
-  `llm_config`, or `tool_config` is threaded through, even though agents and
-  their tool grants are fully modeled and CRUD-able. A production version
-  needs `CreateTaskRequest.agent_id`, with AES resolving that agent's config
-  and passing it into the job spec.
-- **No idempotency key on `CreateTask`.** A client retrying after a timeout
-  will create a duplicate job/task pair; there's no dedup mechanism.
-- **Tenant isolation is enforced by per-query `WHERE tenant_id = ...`
-  discipline**, not a database-level policy (no Postgres RLS) — a missed
-  filter in a future query would leak across tenants with no independent
-  backstop.
-- **No rate limiting or request quota per tenant.**
-- **No structured observability** — no metrics, no tracing, no request ids
-  in logs, which matters once this is one hop in a five-service pipeline and
-  a failure needs to be traced across `orchestrator`/`job_svc`/`mcp_svc`.
-- **Hard deletes** on agents/tools mean no audit trail of what an execution's
-  agent/tool configuration looked like at the time it ran, beyond whatever
-  is embedded in the job snapshot in job_svc.

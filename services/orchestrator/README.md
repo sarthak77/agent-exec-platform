@@ -1,4 +1,4 @@
-# orchestrator
+# Orchestrator
 
 Runs one multi-agent, multi-tool "turn" of a tenant's task: builds an AutoGen
 `SelectorGroupChat` over the tenant's configured agents (one `AssistantAgent`
@@ -151,7 +151,7 @@ mcp_svc, and not by job_svc:
   the lifetime of that one `Chat` RPC — durability of the pending-approval
   state across the pause is job_svc's responsibility, not orchestrator's.
 
-## Tool execution (real, not descriptive-only)
+## Tool execution
 
 Tool calling is fully wired end to end, not merely described in a system
 prompt:
@@ -208,25 +208,6 @@ prompt:
   orchestrator never held authoritative state — job_svc can simply retry the
   `Chat` call.
 
-## Guardrails
-
-Orchestrator applies none of its own beyond tool-grant scoping (above). Input
-guardrails (empty/oversized input, blocklist terms, PII redaction) are
-enforced once, upstream, inside `gateway`, and apply to every message this
-service sends it — orchestrator relies on that entirely rather than
-duplicating it.
-
-## Multi-tenancy
-
-Every DB query and every mcp_svc call in a turn is scoped by the
-`x-tenant-id` extracted in `auth.py`: `agents_repo.list_agents_for_tenant`
-filters `agents`/`tools` by `tenant_id` (with a redundant-but-cheap
-defense-in-depth re-filter on the tools follow-up query), and
-`_mcp_session` forwards the same tenant id as an `x-tenant-id` header to
-mcp_svc so tool execution is scoped there too. There is no cross-tenant
-sharing of agents, tools, gateway clients, or workbenches — everything above
-is built fresh, per tenant, per call.
-
 ## Failure handling
 
 | Failure | Behavior |
@@ -241,83 +222,3 @@ is built fresh, per tenant, per call.
 `servicer.py`'s `_handle_errors` decorator centralizes this mapping (mirrors
 `agent_execution_service/servicer.py`'s convention) so `Chat` itself has no
 try/except noise.
-
-## Observability
-
-Structured Python `logging` at `INFO` for server lifecycle (listen address,
-shutdown) and `WARNING` for degraded-but-handled paths (mcp_svc listing/call
-failures) and propagated upstream gateway errors; unhandled exceptions are
-logged with `logger.exception` before collapsing to `INTERNAL`. Token usage
-(prompt/completion/total, summed across every participant including the
-selector) is returned on every `ChatResponse` so a caller can attribute LLM
-cost per turn. There is no distributed tracing or metrics export today —
-noted as a gap below.
-
-## Run
-
-```sh
-uv sync
-uv run orchestrator
-```
-
-Needs Postgres reachable with the `agents`/`agent_tools`/`tools` tables that
-`agent_execution_service` owns and creates, `gateway` up on its configured
-port, and (for any tool-using flow) `mcp_svc` up and reachable. Config
-(gRPC host/port, Postgres, gateway, mcp url, `chat.max_messages`) lives in
-`config.toml`; override its path with `ORCHESTRATOR_CONFIG_FILE`.
-
-`chat.max_messages` bounds *total* messages in a turn, including every
-tool-call/tool-result round trip — size it for a multi-step tool sequence
-(e.g. retrieve → draft → send), not just a single question/answer; the
-default is `20`.
-
-## Proto
-
-`proto/aep/orchestrator/v1/service.proto` defines `OrchestratorService.Chat`.
-A vendored copy of `gateway`'s proto lives at
-`proto/aep/gateway/v1/service.proto` so this service can generate a client
-stub for it — keep it in sync with `gateway`'s copy by hand. After editing
-either, regenerate stubs with `./scripts/gen_proto.sh`.
-
-## Test
-
-```sh
-uv run --group dev pytest
-```
-
-Unit tests cover: the pure helpers (`_slugify`, transcript mapping in
-`test_transcript.py`); the gateway model client's usage accounting and
-`finish_reason` mapping against a fake stub (`test_model_client.py`); and the
-full human-approval signalling path — workbench-level marker detection,
-per-agent sink isolation, session-level sink aggregation, `run_chat`'s
-finish-reason override, and the mutating-tool local refusal/approval gate
-(`test_approval.py`). None of this requires Postgres, gateway, or mcp_svc —
-dependencies are faked/monkeypatched at their module boundary.
-
-## Try it
-
-```sh
-grpcurl -plaintext -H 'x-tenant-id: t1' \
-  -d '{"messages": [{"role": "user", "content": "find overdue invoices and email the customers"}]}' \
-  localhost:50053 aep.orchestrator.v1.OrchestratorService/Chat
-```
-
-## Known limitations
-
-- **No streaming.** `Chat` is request/response; a long multi-tool turn gives
-  the caller nothing until it fully finishes or pauses for approval.
-- **No transcript/session persistence.** Every call is a from-scratch
-  rebuild; job_svc must carry the full running conversation on every request.
-- **No parallel tool execution.** `SelectorGroupChat` picks one speaker at a
-  time; a single agent's own multi-tool sequence within its turn is also
-  serial (whatever AutoGen's `AssistantAgent` tool loop does internally).
-- **Approval state doesn't survive past the RPC.** `approved` only ever
-  affects the one call it's sent on; there is no "this job's pending call is
-  now approved" record kept here — that durability has to live in job_svc.
-- **No per-service guardrails or rate limiting** beyond what gateway already
-  does upstream; no distributed tracing/metrics beyond logs and per-response
-  token usage.
-- **Speaker selection costs an extra LLM call per turn change** (the
-  `SelectorGroupChat`'s own selector model), which adds latency and token
-  cost on top of each agent's own calls — a fixed round-robin order would be
-  cheaper but less flexible for multi-agent tasks.

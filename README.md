@@ -403,16 +403,42 @@ Provider API keys are **only** read from environment variables
 
 ## AI tools used
 
-Per the assignment's disclosure requirement, AI coding assistants were used
-while building this project:
+Below AI coding assistants were used while building this project:
 
 - **Claude Code (Anthropic)** — primary AI pair-programmer: scaffolding and
   refactoring service code (gRPC servicers, config loaders, typed error
   hierarchies), drafting the design and service documentation
-  ([`ARCHITECTURE.md`](ARCHITECTURE.md).
-- **Windsurf / Cascade** — secondar AI pair-programmer.
+  ([`ARCHITECTURE.md`](ARCHITECTURE.md)).
+- **Windsurf / Cascade** — secondary AI pair-programmer and defining service level readme files.
+- **Model** — Sonnet 5 (major) and OPUS 4.8 (minor)
 
-All AI output was reviewed by a human.
+Note:
+- Could have delivered more in this assignment if OPUS usage was unrestricted.
+- All AI output was reviewed by a human.
+
+## Assumptions
+
+The current build makes a few deliberate modeling simplifications; each is a
+place a fuller build would grow structure (see also *Current limitations* and
+*Future extensions*).
+
+- **A tool is a catalog entry backed by a built-in handler** — a `Tool` (owned
+  by AES) is just `name`, `description`, and a `mutating` flag; the executable
+  behavior lives in code in `mcp_svc`'s handler registry (`http_request` and
+  `query_database` ship today). A tool whose `name` has no matching handler
+  lists but can't execute. Generic, code-/data-driven tools (arbitrary input
+  schema + executor config, or a proxy to external MCP servers) are a later
+  phase.
+- **An agent is instructions + granted tools** — an `Agent` is a `name`,
+  free-text `instructions`, an `LLMConfig` (model + temperature), and a set of
+  granted tool ids; there is no per-agent memory or persisted conversation
+  state, and every agent must be granted at least one tool. Run-time behavior
+  is entirely the instructions plus the tools it may call.
+- **A task is a single text input** — `CreateTask` takes one free-text `input`
+  string as the whole task spec, forwarded verbatim as the job's
+  agent-execution instructions. No structured parameters, attachments, explicit
+  agent selection, or multi-turn conversation state: one task = one prompt =
+  one job.
 
 ## Current limitations and known gaps
 - Missing e2e testing. (I'm sure some things would break on e2e testing but they should be trivially fixable)
@@ -422,6 +448,9 @@ All AI output was reviewed by a human.
 - Currently proto dependencies are copied but we can import them from the service. 
 - Missing fetch job progress API.
 - Missing single docker file to get the system started as a single unit (was facing permission issues with docker as it is managed by the employer).
+- Used in memory storage for persisting some data which in ideal scenario should be persisted in DB.
+- Cache layer not present in orchestrator so on every request new session is created.
+- RBAC is currently not very strict.
 
 ## Future extensions
 
@@ -462,6 +491,7 @@ structured so these are additive rather than redesigns; natural next steps:
 - **Pagination** — can add support for pagination.
 - **DI Patterm** — can add support initializing all objects via a DI library.
 - **DB library** — can add support for a generic interface using which all clients communicate to db so that it is easy to change underlying db technology anytime.
+- **Extendability** — for gateway in particular since today we have few guard rails and providers, there is no structure around that but we can add a structure when adding more of these.
 
 ## Further documentation
 
