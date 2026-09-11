@@ -135,3 +135,19 @@ def test_job_to_proto_carries_progress() -> None:
     assert proto.progress.phase == service_pb2.JOB_PHASE_COMPLETED
     assert list(proto.progress.plan) == ["a"]
     assert proto.progress.steps[0].output == "done"
+
+
+def test_job_to_proto_carries_result_when_completed() -> None:
+    row = _row(status="succeeded")
+    row.progress = {"phase": "completed", "result": "the final answer"}
+    proto = job_to_proto(row)
+    assert proto.HasField("result")
+    assert proto.result.agent_execution_result.output == "the final answer"
+
+
+def test_job_to_proto_leaves_result_unset_without_output() -> None:
+    # No result checkpointed yet -> the oneof stays unset so a caller can tell
+    # "not done" from an empty answer.
+    proto = job_to_proto(_row(status="running"))
+    assert not proto.HasField("result")
+    assert proto.result.WhichOneof("result") is None

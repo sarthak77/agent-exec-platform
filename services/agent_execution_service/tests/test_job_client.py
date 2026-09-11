@@ -29,6 +29,20 @@ def test_to_ref_maps_status_string() -> None:
     ref = _to_ref(job)
     assert ref.id == "j1"
     assert ref.status == "running"
+    assert ref.result == ""  # no result oneof set yet
+
+
+def test_to_ref_surfaces_agent_execution_result() -> None:
+    job = service_pb2.Job(
+        id="j1",
+        status=service_pb2.JOB_STATUS_SUCCEEDED,
+        result=service_pb2.JobResult(
+            agent_execution_result=service_pb2.AgentExecutionResult(output="done")
+        ),
+    )
+    ref = _to_ref(job)
+    assert ref.status == "succeeded"
+    assert ref.result == "done"
 
 
 @pytest.mark.parametrize(

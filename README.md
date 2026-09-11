@@ -205,8 +205,8 @@ orchestrator. Details: [`services/mcp_svc/README.md`](services/mcp_svc/README.md
 | `Agent` | AES | `id`, `name`, `instructions`, `llm_config{name,temperature}`, granted tool ids, `version` |
 | `Tool` | AES | `id`, `name`, `description`, `mutating`, `version` |
 | `agent_tools` | AES | `agent_id`, `tool_id` (the grant, many-to-many) |
-| `Task` | AES | `id`, `input`, `job_id`, `status` (`PENDING`/`RUNNING`/`WAITING_APPROVAL`/`COMPLETED`/`FAILED`) |
-| `Job` | job_svc | `id`, `type`, `spec`, `status`, `attempts`/`max_attempts`, `retry_count`/`max_retries`, `progress`, lease |
+| `Task` | AES | `id`, `input`, `job_id`, `status` (`PENDING`/`RUNNING`/`WAITING_APPROVAL`/`COMPLETED`/`FAILED`), `result` |
+| `Job` | job_svc | `id`, `type`, `spec`, `status`, `attempts`/`max_attempts`, `retry_count`/`max_retries`, `progress`, `result`, lease |
 
 Full message definitions live in each service's `proto/` directory and README.
 
@@ -248,7 +248,8 @@ package-level README (and in [`ARCHITECTURE.md`](ARCHITECTURE.md)):
 
 The platform retains enough state to answer the assignment's execution-history
 questions, primarily from a job's `progress` JSON checkpoint (read via
-`job_svc`'s `GetJob`); AES's `GetTask` returns a cached status snapshot:
+`job_svc`'s `GetJob`); AES's `GetTask` surfaces the job's status and final
+result, refreshing its snapshot from job_svc on read for any non-terminal task:
 
 | Question | Where it's answered |
 | --- | --- |
@@ -259,11 +260,12 @@ questions, primarily from a job's `progress` JSON checkpoint (read via
 | What failed? | `progress["error"]` (latest failure message) |
 | What was retried? | `attempts`/`retry_count` vs. their maxima on the job |
 | Current status? | `Job.status` / `Task.status` |
-| Final result? | `progress["result"]` |
+| Final result? | `progress["result"]`, also surfaced as `Job.result` / `Task.result` |
 
-**Caveat:** `GetTask` only refreshes its snapshot on a mutating call
-(`ApproveTask`/`RetryTask`), so a task left running reports its last-known status
-until then — the authoritative live state is the job's `progress`.
+**Note:** `GetTask` refreshes a non-terminal task's snapshot (status + result)
+from job_svc on read, so a task left running reflects the job's live state; a
+terminal task (`COMPLETED`/`FAILED`) is served from the local snapshot without a
+round-trip. The full per-step trail still lives only in the job's `progress`.
 **Observability today** is stdlib logging plus the persisted `progress["error"]`
 and per-turn `token_usage`; metrics and distributed tracing are future work.
 Full mapping: [`ARCHITECTURE.md`](ARCHITECTURE.md) §4.4.

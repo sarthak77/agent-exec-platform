@@ -25,17 +25,17 @@ _sym_db = _symbol_database.Default()
 from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x18\x61\x65p/job/v1/service.proto\x12\naep.job.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xae\x01\n\x10\x43reateJobRequest\x12!\n\x04type\x18\x01 \x01(\x0e\x32\x13.aep.job.v1.JobType\x12!\n\x04spec\x18\x02 \x01(\x0b\x32\x13.aep.job.v1.JobSpec\x12\x19\n\x0cmax_attempts\x18\x03 \x01(\x05H\x00\x88\x01\x01\x12\x18\n\x0bmax_retries\x18\x04 \x01(\x05H\x01\x88\x01\x01\x42\x0f\n\r_max_attemptsB\x0e\n\x0c_max_retries\"1\n\x11\x43reateJobResponse\x12\x1c\n\x03job\x18\x01 \x01(\x0b\x32\x0f.aep.job.v1.Job\"@\n\rGetJobRequest\x12/\n\x06\x66ilter\x18\x01 \x01(\x0b\x32\x1f.aep.job.v1.GetJobRequestFilter\"o\n\x13GetJobRequestFilter\x12\x0b\n\x03ids\x18\x01 \x03(\t\x12\'\n\x08statuses\x18\x02 \x03(\x0e\x32\x15.aep.job.v1.JobStatus\x12\"\n\x05types\x18\x03 \x03(\x0e\x32\x13.aep.job.v1.JobType\"/\n\x0eGetJobResponse\x12\x1d\n\x04jobs\x18\x01 \x03(\x0b\x32\x0f.aep.job.v1.Job\"E\n\x10UpdateJobRequest\x12\n\n\x02id\x18\x01 \x01(\t\x12%\n\x06status\x18\x02 \x01(\x0e\x32\x15.aep.job.v1.JobStatus\"1\n\x11UpdateJobResponse\x12\x1c\n\x03job\x18\x01 \x01(\x0b\x32\x0f.aep.job.v1.Job\"\x1d\n\x0fRetryJobRequest\x12\n\n\x02id\x18\x01 \x01(\t\"0\n\x10RetryJobResponse\x12\x1c\n\x03job\x18\x01 \x01(\x0b\x32\x0f.aep.job.v1.Job\"\xfb\x01\n\x03Job\x12\n\n\x02id\x18\x01 \x01(\t\x12!\n\x04type\x18\x02 \x01(\x0e\x32\x13.aep.job.v1.JobType\x12!\n\x04spec\x18\x03 \x01(\x0b\x32\x13.aep.job.v1.JobSpec\x12%\n\x06status\x18\x04 \x01(\x0e\x32\x15.aep.job.v1.JobStatus\x12\x10\n\x08\x61ttempts\x18\x05 \x01(\x05\x12\x14\n\x0cmax_attempts\x18\x06 \x01(\x05\x12)\n\x08metadata\x18\t \x01(\x0b\x32\x17.aep.job.v1.JobMetadata\x12\x13\n\x0bretry_count\x18\x0b \x01(\x05\x12\x13\n\x0bmax_retries\x18\x0c \x01(\x05\"Q\n\x07JobSpec\x12>\n\x14\x61gent_execution_spec\x18\x01 \x01(\x0b\x32\x1e.aep.job.v1.AgentExecutionSpecH\x00\x42\x06\n\x04spec\"\x90\x01\n\x12\x41gentExecutionSpec\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x14\n\x0cinstructions\x18\x02 \x01(\t\x12)\n\nllm_config\x18\x03 \x01(\x0b\x32\x15.aep.job.v1.LLMConfig\x12+\n\x0btool_config\x18\x04 \x01(\x0b\x32\x16.aep.job.v1.ToolConfig\".\n\tLLMConfig\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x13\n\x0btemperature\x18\x02 \x01(\x02\"\x19\n\nToolConfig\x12\x0b\n\x03ids\x18\x01 \x03(\t\"m\n\x0bJobMetadata\x12.\n\ncreated_at\x18\x01 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12.\n\nupdated_at\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp*\xd7\x01\n\tJobStatus\x12\x1a\n\x16JOB_STATUS_UNSPECIFIED\x10\x00\x12\x15\n\x11JOB_STATUS_QUEUED\x10\x01\x12\x16\n\x12JOB_STATUS_RUNNING\x10\x02\x12\x18\n\x14JOB_STATUS_SUCCEEDED\x10\x03\x12\x15\n\x11JOB_STATUS_FAILED\x10\x04\x12\x13\n\x0fJOB_STATUS_DEAD\x10\x05\x12\x18\n\x14JOB_STATUS_CANCELLED\x10\x06\x12\x1f\n\x1bJOB_STATUS_WAITING_APPROVAL\x10\x07*A\n\x07JobType\x12\x18\n\x14JOB_TYPE_UNSPECIFIED\x10\x00\x12\x1c\n\x18JOB_TYPE_AGENT_EXECUTION\x10\x01\x32\xa8\x02\n\nJobService\x12H\n\tCreateJob\x12\x1c.aep.job.v1.CreateJobRequest\x1a\x1d.aep.job.v1.CreateJobResponse\x12?\n\x06GetJob\x12\x19.aep.job.v1.GetJobRequest\x1a\x1a.aep.job.v1.GetJobResponse\x12H\n\tUpdateJob\x12\x1c.aep.job.v1.UpdateJobRequest\x1a\x1d.aep.job.v1.UpdateJobResponse\x12\x45\n\x08RetryJob\x12\x1b.aep.job.v1.RetryJobRequest\x1a\x1c.aep.job.v1.RetryJobResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x18\x61\x65p/job/v1/service.proto\x12\naep.job.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xae\x01\n\x10\x43reateJobRequest\x12!\n\x04type\x18\x01 \x01(\x0e\x32\x13.aep.job.v1.JobType\x12!\n\x04spec\x18\x02 \x01(\x0b\x32\x13.aep.job.v1.JobSpec\x12\x19\n\x0cmax_attempts\x18\x03 \x01(\x05H\x00\x88\x01\x01\x12\x18\n\x0bmax_retries\x18\x04 \x01(\x05H\x01\x88\x01\x01\x42\x0f\n\r_max_attemptsB\x0e\n\x0c_max_retries\"1\n\x11\x43reateJobResponse\x12\x1c\n\x03job\x18\x01 \x01(\x0b\x32\x0f.aep.job.v1.Job\"@\n\rGetJobRequest\x12/\n\x06\x66ilter\x18\x01 \x01(\x0b\x32\x1f.aep.job.v1.GetJobRequestFilter\"o\n\x13GetJobRequestFilter\x12\x0b\n\x03ids\x18\x01 \x03(\t\x12\'\n\x08statuses\x18\x02 \x03(\x0e\x32\x15.aep.job.v1.JobStatus\x12\"\n\x05types\x18\x03 \x03(\x0e\x32\x13.aep.job.v1.JobType\"/\n\x0eGetJobResponse\x12\x1d\n\x04jobs\x18\x01 \x03(\x0b\x32\x0f.aep.job.v1.Job\"E\n\x10UpdateJobRequest\x12\n\n\x02id\x18\x01 \x01(\t\x12%\n\x06status\x18\x02 \x01(\x0e\x32\x15.aep.job.v1.JobStatus\"1\n\x11UpdateJobResponse\x12\x1c\n\x03job\x18\x01 \x01(\x0b\x32\x0f.aep.job.v1.Job\"\x1d\n\x0fRetryJobRequest\x12\n\n\x02id\x18\x01 \x01(\t\"0\n\x10RetryJobResponse\x12\x1c\n\x03job\x18\x01 \x01(\x0b\x32\x0f.aep.job.v1.Job\"\xa2\x02\n\x03Job\x12\n\n\x02id\x18\x01 \x01(\t\x12!\n\x04type\x18\x02 \x01(\x0e\x32\x13.aep.job.v1.JobType\x12!\n\x04spec\x18\x03 \x01(\x0b\x32\x13.aep.job.v1.JobSpec\x12%\n\x06status\x18\x04 \x01(\x0e\x32\x15.aep.job.v1.JobStatus\x12\x10\n\x08\x61ttempts\x18\x05 \x01(\x05\x12\x14\n\x0cmax_attempts\x18\x06 \x01(\x05\x12)\n\x08metadata\x18\t \x01(\x0b\x32\x17.aep.job.v1.JobMetadata\x12\x13\n\x0bretry_count\x18\x0b \x01(\x05\x12\x13\n\x0bmax_retries\x18\x0c \x01(\x05\x12%\n\x06result\x18\r \x01(\x0b\x32\x15.aep.job.v1.JobResult\"Q\n\x07JobSpec\x12>\n\x14\x61gent_execution_spec\x18\x01 \x01(\x0b\x32\x1e.aep.job.v1.AgentExecutionSpecH\x00\x42\x06\n\x04spec\"\x90\x01\n\x12\x41gentExecutionSpec\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x14\n\x0cinstructions\x18\x02 \x01(\t\x12)\n\nllm_config\x18\x03 \x01(\x0b\x32\x15.aep.job.v1.LLMConfig\x12+\n\x0btool_config\x18\x04 \x01(\x0b\x32\x16.aep.job.v1.ToolConfig\"Y\n\tJobResult\x12\x42\n\x16\x61gent_execution_result\x18\x01 \x01(\x0b\x32 .aep.job.v1.AgentExecutionResultH\x00\x42\x08\n\x06result\"&\n\x14\x41gentExecutionResult\x12\x0e\n\x06output\x18\x01 \x01(\t\".\n\tLLMConfig\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x13\n\x0btemperature\x18\x02 \x01(\x02\"\x19\n\nToolConfig\x12\x0b\n\x03ids\x18\x01 \x03(\t\"m\n\x0bJobMetadata\x12.\n\ncreated_at\x18\x01 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12.\n\nupdated_at\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp*\xd7\x01\n\tJobStatus\x12\x1a\n\x16JOB_STATUS_UNSPECIFIED\x10\x00\x12\x15\n\x11JOB_STATUS_QUEUED\x10\x01\x12\x16\n\x12JOB_STATUS_RUNNING\x10\x02\x12\x18\n\x14JOB_STATUS_SUCCEEDED\x10\x03\x12\x15\n\x11JOB_STATUS_FAILED\x10\x04\x12\x13\n\x0fJOB_STATUS_DEAD\x10\x05\x12\x18\n\x14JOB_STATUS_CANCELLED\x10\x06\x12\x1f\n\x1bJOB_STATUS_WAITING_APPROVAL\x10\x07*A\n\x07JobType\x12\x18\n\x14JOB_TYPE_UNSPECIFIED\x10\x00\x12\x1c\n\x18JOB_TYPE_AGENT_EXECUTION\x10\x01\x32\xa8\x02\n\nJobService\x12H\n\tCreateJob\x12\x1c.aep.job.v1.CreateJobRequest\x1a\x1d.aep.job.v1.CreateJobResponse\x12?\n\x06GetJob\x12\x19.aep.job.v1.GetJobRequest\x1a\x1a.aep.job.v1.GetJobResponse\x12H\n\tUpdateJob\x12\x1c.aep.job.v1.UpdateJobRequest\x1a\x1d.aep.job.v1.UpdateJobResponse\x12\x45\n\x08RetryJob\x12\x1b.aep.job.v1.RetryJobRequest\x1a\x1c.aep.job.v1.RetryJobResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'aep.job.v1.service_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_JOBSTATUS']._serialized_start=1403
-  _globals['_JOBSTATUS']._serialized_end=1618
-  _globals['_JOBTYPE']._serialized_start=1620
-  _globals['_JOBTYPE']._serialized_end=1685
+  _globals['_JOBSTATUS']._serialized_start=1573
+  _globals['_JOBSTATUS']._serialized_end=1788
+  _globals['_JOBTYPE']._serialized_start=1790
+  _globals['_JOBTYPE']._serialized_end=1855
   _globals['_CREATEJOBREQUEST']._serialized_start=74
   _globals['_CREATEJOBREQUEST']._serialized_end=248
   _globals['_CREATEJOBRESPONSE']._serialized_start=250
@@ -55,17 +55,21 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_RETRYJOBRESPONSE']._serialized_start=682
   _globals['_RETRYJOBRESPONSE']._serialized_end=730
   _globals['_JOB']._serialized_start=733
-  _globals['_JOB']._serialized_end=984
-  _globals['_JOBSPEC']._serialized_start=986
-  _globals['_JOBSPEC']._serialized_end=1067
-  _globals['_AGENTEXECUTIONSPEC']._serialized_start=1070
-  _globals['_AGENTEXECUTIONSPEC']._serialized_end=1214
-  _globals['_LLMCONFIG']._serialized_start=1216
-  _globals['_LLMCONFIG']._serialized_end=1262
-  _globals['_TOOLCONFIG']._serialized_start=1264
-  _globals['_TOOLCONFIG']._serialized_end=1289
-  _globals['_JOBMETADATA']._serialized_start=1291
-  _globals['_JOBMETADATA']._serialized_end=1400
-  _globals['_JOBSERVICE']._serialized_start=1688
-  _globals['_JOBSERVICE']._serialized_end=1984
+  _globals['_JOB']._serialized_end=1023
+  _globals['_JOBSPEC']._serialized_start=1025
+  _globals['_JOBSPEC']._serialized_end=1106
+  _globals['_AGENTEXECUTIONSPEC']._serialized_start=1109
+  _globals['_AGENTEXECUTIONSPEC']._serialized_end=1253
+  _globals['_JOBRESULT']._serialized_start=1255
+  _globals['_JOBRESULT']._serialized_end=1344
+  _globals['_AGENTEXECUTIONRESULT']._serialized_start=1346
+  _globals['_AGENTEXECUTIONRESULT']._serialized_end=1384
+  _globals['_LLMCONFIG']._serialized_start=1386
+  _globals['_LLMCONFIG']._serialized_end=1432
+  _globals['_TOOLCONFIG']._serialized_start=1434
+  _globals['_TOOLCONFIG']._serialized_end=1459
+  _globals['_JOBMETADATA']._serialized_start=1461
+  _globals['_JOBMETADATA']._serialized_end=1570
+  _globals['_JOBSERVICE']._serialized_start=1858
+  _globals['_JOBSERVICE']._serialized_end=2154
 # @@protoc_insertion_point(module_scope)

@@ -41,6 +41,36 @@ async def test_get_by_ids_filters(sessions, jobs) -> None:
     assert [r.id for r in rows] == [a.id]
 
 
+async def test_get_refreshes_status_and_result_from_job(sessions, jobs) -> None:
+    # A freshly created task is pending; its job then runs to completion in
+    # job_svc on its own. GetTask must refresh from the authoritative Job and
+    # surface both the terminal status and the final result -- not the stale
+    # snapshot taken at create time.
+    svc = TaskService(sessions, jobs)
+    task = await svc.create(tenant_id=TENANT, input="go")
+    jobs.set_status(task.job_id, "succeeded")
+    jobs.set_result(task.job_id, "the answer is 42")
+
+    (fetched,) = await svc.get(tenant_id=TENANT, ids=[task.id])
+    assert fetched.status == "completed"
+    assert fetched.result == "the answer is 42"
+
+
+async def test_get_does_not_refresh_terminal_tasks(sessions, jobs) -> None:
+    # Once a task is terminal its result is frozen: a later out-of-band job_svc
+    # change must not be pulled in on a subsequent read.
+    svc = TaskService(sessions, jobs)
+    task = await svc.create(tenant_id=TENANT, input="go")
+    jobs.set_status(task.job_id, "succeeded")
+    jobs.set_result(task.job_id, "first")
+    await svc.get(tenant_id=TENANT, ids=[task.id])  # snapshots completed/"first"
+
+    jobs.set_result(task.job_id, "second")
+    (fetched,) = await svc.get(tenant_id=TENANT, ids=[task.id])
+    assert fetched.status == "completed"
+    assert fetched.result == "first"
+
+
 async def test_approve_resumes_a_waiting_job_and_refreshes_snapshot(sessions, jobs) -> None:
     svc = TaskService(sessions, jobs)
     task = await svc.create(tenant_id=TENANT, input="go")

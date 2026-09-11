@@ -276,18 +276,26 @@ class ToolMetadata(_message.Message):
     def __init__(self, version: _Optional[int] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
 class Task(_message.Message):
-    __slots__ = ("id", "input", "status", "metadata", "job_id")
+    __slots__ = ("id", "input", "status", "metadata", "job_id", "result")
     ID_FIELD_NUMBER: _ClassVar[int]
     INPUT_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
     METADATA_FIELD_NUMBER: _ClassVar[int]
     JOB_ID_FIELD_NUMBER: _ClassVar[int]
+    RESULT_FIELD_NUMBER: _ClassVar[int]
     id: str
     input: str
     status: TaskStatus
     metadata: TaskMetadata
     job_id: str
-    def __init__(self, id: _Optional[str] = ..., input: _Optional[str] = ..., status: _Optional[_Union[TaskStatus, str]] = ..., metadata: _Optional[_Union[TaskMetadata, _Mapping]] = ..., job_id: _Optional[str] = ...) -> None: ...
+    result: TaskResult
+    def __init__(self, id: _Optional[str] = ..., input: _Optional[str] = ..., status: _Optional[_Union[TaskStatus, str]] = ..., metadata: _Optional[_Union[TaskMetadata, _Mapping]] = ..., job_id: _Optional[str] = ..., result: _Optional[_Union[TaskResult, _Mapping]] = ...) -> None: ...
+
+class TaskResult(_message.Message):
+    __slots__ = ("output",)
+    OUTPUT_FIELD_NUMBER: _ClassVar[int]
+    output: str
+    def __init__(self, output: _Optional[str] = ...) -> None: ...
 
 class TaskMetadata(_message.Message):
     __slots__ = ("created_at", "updated_at")

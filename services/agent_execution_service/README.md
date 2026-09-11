@@ -19,7 +19,7 @@ mirroring the state of exactly one job in job_svc.
 | `agents` | `id`, `tenant_id`, `name`, `instructions`, `llm_config_name`, `llm_config_temperature`, `version`, `created_at`, `updated_at` | `version` is bumped on every `UpdateAgent`. No status/archived flag — deletes are hard deletes. |
 | `tools` | `id`, `tenant_id`, `name`, `description`, `mutating`, `version`, `created_at`, `updated_at` | `UNIQUE(tenant_id, name)`. `mutating=true` marks a tool whose calls require human approval (enforced in `orchestrator`/`mcp_svc`, not here). |
 | `agent_tools` | `agent_id`, `tool_id` (composite PK, both FKs `ON DELETE CASCADE`) | The tool grant backing `Agent.tool_config.ids`. |
-| `tasks` | `id`, `tenant_id`, `input`, `job_id`, `status`, `created_at`, `updated_at` | `job_id` links 1:1 to a job in `job_svc`. `status` is a **cached snapshot** of that job's status, refreshed only on mutating calls (see below) — `GetTask` never calls out to job_svc. |
+| `tasks` | `id`, `tenant_id`, `input`, `job_id`, `status`, `result`, `created_at`, `updated_at` | `job_id` links 1:1 to a job in `job_svc`. `status`/`result` are a **cached snapshot** of that job's state; `GetTask` refreshes it from job_svc on read for any non-terminal task, and mutating calls (approve/retry) refresh it too. A terminal task is served from the snapshot with no round-trip. |
 
 All tables are scoped by `tenant_id`; there is no cross-tenant foreign key
 anywhere in the schema.
@@ -31,7 +31,7 @@ anywhere in the schema.
 | `CreateTool` / `GetTool` / `UpdateTool` / `DeleteTool` | Manage the tool catalog for the caller's tenant. |
 | `CreateAgent` / `GetAgent` / `UpdateAgent` / `DeleteAgent` | Manage agents: instructions, `LLMConfig`, and the set of tool ids granted to the agent. |
 | `CreateTask` | Submit a task (`input` string) for asynchronous execution. |
-| `GetTask` | Read a task's cached status/result handle by id. |
+| `GetTask` | Read a task's status/result by id; a non-terminal task is refreshed from job_svc, a terminal task served from the local snapshot. |
 | `ApproveTask` | Resume a task whose job is paused at a human-approval gate. |
 | `RetryTask` | Requeue a task whose job failed or is dead. |
 
@@ -63,8 +63,8 @@ row is created. The job is submitted as `JOB_TYPE_AGENT_EXECUTION` with
 **Approve / retry** — `TaskService.approve`/`retry` look up the task's
 `job_id` (scoped by `tenant_id`, `NotFoundError` if missing or owned by
 another tenant), then delegate the actual state transition to job_svc
-(`UpdateJob(QUEUED)` / `RetryJob`) and overwrite the local `status` column
-with whatever job_svc reports back (`_save_status`, an absolute
+(`UpdateJob(QUEUED)` / `RetryJob`) and overwrite the local `status`/`result`
+columns with whatever job_svc reports back (`_save_status`, an absolute
 `UPDATE ... RETURNING`, not a read-modify-write).
 
 ## Human approval
@@ -126,7 +126,11 @@ transitions: rather than fetch-then-check-then-mutate on a cached status (a
 classic race), it forwards `approve`/`retry` to job_svc and treats whatever
 comes back as authoritative, writing it with an absolute `UPDATE` (never
 read-modify-write) so concurrent refreshes are last-writer-wins against a
-single source of truth. `job_client.JobClient` uses one lazily-created,
+single source of truth. `GetTask` applies the same discipline on the read path:
+for a non-terminal task it refreshes status/result from job_svc (concurrently
+across tasks, **outside** any DB transaction) best-effort — a failed refresh
+keeps the last snapshot rather than failing the read — and persists only the
+rows that actually changed. `job_client.JobClient` uses one lazily-created,
 process-wide gRPC channel (channels multiplex concurrent RPCs internally),
 and the remote call to job_svc always happens **outside** any DB transaction
 so a slow or unreachable job_svc can never pin a Postgres connection open.

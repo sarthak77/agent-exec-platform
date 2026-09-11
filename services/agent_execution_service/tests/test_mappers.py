@@ -35,3 +35,18 @@ def test_status_mapping() -> None:
 
 def test_unknown_status_maps_to_unspecified() -> None:
     assert task_to_proto(_row("bogus")).status == service_pb2.TASK_STATUS_UNSPECIFIED
+
+
+def test_task_to_proto_surfaces_result_when_present() -> None:
+    row = _row("completed")
+    row.result = "the final answer"
+    proto = task_to_proto(row)
+    assert proto.HasField("result")
+    assert proto.result.output == "the final answer"
+
+
+def test_task_to_proto_leaves_result_unset_when_empty() -> None:
+    # A task with no output yet must not carry a result, so a client can tell
+    # "not done" from an empty answer.
+    proto = task_to_proto(_row("pending"))
+    assert not proto.HasField("result")

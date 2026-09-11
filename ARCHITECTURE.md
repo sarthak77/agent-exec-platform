@@ -155,8 +155,9 @@ the task↔job bridge.
     llm_config_temperature, version, created_at, updated_at`, plus a
     many-to-many `AgentToolRow` link table granting specific tools to a
     specific agent (`ToolService`/`AgentService._link_tools()`).
-  - `TaskRow` — `id, tenant_id, input, job_id, status, created_at,
-    updated_at`. A thin edge-side handle: one task maps to exactly one job.
+  - `TaskRow` — `id, tenant_id, input, job_id, status, result, created_at,
+    updated_at`. A thin edge-side handle: one task maps to exactly one job;
+    `status`/`result` are a cached snapshot of that job's state.
 - **`TaskService` (`services/tasks.py`) — delegation, not ownership.** Job
   state transitions are not decided here; job_svc already enforces them
   atomically (§4.1), so this service never does a fetch-then-check-then-mutate
@@ -167,20 +168,27 @@ the task↔job bridge.
   - `approve()` and `retry()` both: look up the task's `job_id` (tenant-scoped,
     `NotFoundError` if missing or owned by another tenant), forward to
     job_svc (`start_job` / `retry_job` over the `JobGateway` protocol — see
-    §4.7), then persist the refreshed status snapshot from job_svc's
+    §4.7), then persist the refreshed status/result snapshot from job_svc's
     authoritative response. `approve()` is a pure pass-through: it does not
     special-case email or any other tool — the approval semantics live
     entirely in job_svc's job state machine and the orchestrator's tool
     workbench (§4.3), not in AES.
   - The remote call to job_svc is always made **outside** a DB transaction,
     so a slow/unreachable job_svc never pins a Postgres connection; the
-    snapshot write is an absolute `UPDATE ... SET status = :status`, never a
+    snapshot write is an absolute `UPDATE ... SET status, result`, never a
     read-modify-write, so concurrent refreshes are last-writer-wins against
     the same upstream source of truth rather than a lost-update race. This is
     exercised directly by
     `test_concurrent_approvals_only_one_wins` (ten concurrent `approve()`
     calls on the same task: exactly one wins, nine get `StateError` from
     job_svc's own guard).
+  - `get()` refreshes on read: any task not already in a terminal state has its
+    snapshot (status + result) refreshed from job_svc's `GetJob` — fetched
+    concurrently across the requested tasks, **outside** any DB transaction, and
+    best-effort (a failed refresh keeps the last snapshot rather than failing the
+    read) — so a task whose job ran to completion on its own is reflected without
+    the caller issuing a mutating call. A terminal task is served from the local
+    snapshot with no round-trip.
   - `job_svc` status strings map to task status strings via
     `_TASK_STATUS_FROM_JOB` (e.g. `queued → pending`, `waiting_approval →
     waiting_approval`, `dead/cancelled → failed`), which is also how
@@ -524,7 +532,7 @@ section asks for, without a separate audit log:
 | What failed? | `progress["error"]` (latest failure message) |
 | What was retried? | `JobRow.attempts`/`retry_count` vs. `max_attempts`/`max_retries` |
 | What is the current status? | `JobRow.status` / `TaskRow.status` |
-| What was the final result? | `progress["result"]` |
+| What was the final result? | `progress["result"]`, surfaced as `Job.result` / `Task.result` |
 
 **Gap, called out honestly:** individual tool calls and their arguments/results
 within a step are not separately persisted rows — they live inside the

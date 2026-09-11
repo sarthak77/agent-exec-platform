@@ -75,7 +75,10 @@ the runner reaches that phase):
   `config.toml`'s `[jobs]` section when omitted.
 - `GetJob(filter: ids | statuses | types)` — tenant-scoped read; this is how
   a caller polls a job's status/progress (the assignment's "track progress
-  and final outcome" requirement).
+  and final outcome" requirement). Once a job completes, its final answer is
+  also surfaced as the typed `Job.result`
+  (`JobResult.agent_execution_result.output`, mapped from `progress["result"]`)
+  so a caller need not dig into the progress blob.
 - `UpdateJob(id, status)` — a constrained state-machine transition (see
   below), not a free-form field update.
 - `RetryJob(id)` — manual retry of a job resting at `failed`; resets

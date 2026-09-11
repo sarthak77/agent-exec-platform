@@ -90,10 +90,14 @@ class TaskRow(Base):
     # Id of the job in job_svc this task was submitted as (see services/tasks.py).
     # Every task corresponds to exactly one job.
     job_id: Mapped[str] = mapped_column(index=True)
-    # A snapshot of the corresponding job's status, refreshed on every mutating
-    # call (create/approve/retry) that gets a fresh Job back from job_svc. Keeps
-    # GetTask a local read rather than fanning out to job_svc on every read.
+    # A snapshot of the corresponding job's status, refreshed from the
+    # authoritative Job on every mutating call (create/approve/retry) and, while
+    # the task is non-terminal, on read too (see services/tasks.py). A terminal
+    # task is served from this snapshot without a job_svc round-trip.
     status: Mapped[str] = mapped_column(default="pending")
+    # Snapshot of the job's final output, refreshed alongside `status`. Empty
+    # until the backing job has completed and produced a result.
+    result: Mapped[str] = mapped_column(default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=now, onupdate=now

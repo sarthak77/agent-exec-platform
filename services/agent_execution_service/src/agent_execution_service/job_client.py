@@ -34,11 +34,13 @@ from agent_execution_service.errors import (
 
 @dataclass(frozen=True, slots=True)
 class JobRef:
-    """The slice of a job_svc Job this service cares about: its id and current
-    status (a job_svc status string such as ``"queued"`` / ``"running"``)."""
+    """The slice of a job_svc Job this service cares about: its id, current
+    status (a job_svc status string such as ``"queued"`` / ``"running"``) and,
+    once the job has completed, its final output (``""`` until then)."""
 
     id: str
     status: str
+    result: str = ""
 
 
 @runtime_checkable
@@ -47,6 +49,8 @@ class JobGateway(Protocol):
     to fake in tests."""
 
     async def create_job(self, *, tenant_id: str, input: str) -> JobRef: ...
+
+    async def get_job(self, *, tenant_id: str, job_id: str) -> JobRef: ...
 
     async def start_job(self, *, tenant_id: str, job_id: str) -> JobRef: ...
 
@@ -102,6 +106,17 @@ class JobClient(JobGateway):
         response = await self._call(self._get_stub().CreateJob, request, tenant_id)
         return _to_ref(response.job)
 
+    async def get_job(self, *, tenant_id: str, job_id: str) -> JobRef:
+        # Read a single job by id so a task read can refresh its snapshot
+        # (status + final result) from the authoritative Job.
+        request = service_pb2.GetJobRequest(
+            filter=service_pb2.GetJobRequestFilter(ids=[job_id])
+        )
+        response = await self._call(self._get_stub().GetJob, request, tenant_id)
+        if not response.jobs:
+            raise NotFoundError(f"job_svc: job {job_id} not found")
+        return _to_ref(response.jobs[0])
+
     async def start_job(self, *, tenant_id: str, job_id: str) -> JobRef:
         # Approving a task resumes its paused job: job_svc transitions
         # waiting_approval -> queued (guarded atomically), and the poller then
@@ -138,4 +153,10 @@ _JOB_STATUS_STR = {
 
 
 def _to_ref(job: service_pb2.Job) -> JobRef:
-    return JobRef(id=job.id, status=_JOB_STATUS_STR.get(job.status, "unspecified"))
+    return JobRef(
+        id=job.id,
+        status=_JOB_STATUS_STR.get(job.status, "unspecified"),
+        # An unset oneof (or a non-agent-execution result) reads back as ""
+        # (proto3 default), which is exactly the "no result yet" sentinel.
+        result=job.result.agent_execution_result.output,
+    )

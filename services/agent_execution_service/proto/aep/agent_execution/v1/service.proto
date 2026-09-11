@@ -189,6 +189,11 @@ message Task {
   TaskStatus status = 3;
   TaskMetadata metadata = 4;
   string job_id = 5;
+  TaskResult result = 6;
+}
+
+message TaskResult {
+  string output = 1; // final answer, surfaced from the backing job once completed
 }
 
 enum TaskStatus {

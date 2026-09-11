@@ -47,6 +47,7 @@ class FakeJobGateway(JobGateway):
 
     def __init__(self, *, delay: float = 0.0) -> None:
         self._status: dict[str, str] = {}
+        self._result: dict[str, str] = {}
         self._tenant: dict[str, str] = {}
         self.delay = delay
         self.created: list[str] = []
@@ -57,6 +58,13 @@ class FakeJobGateway(JobGateway):
         self._tenant[job_id] = tenant_id
         self.created.append(input)
         return JobRef(id=job_id, status="queued")
+
+    async def get_job(self, *, tenant_id: str, job_id: str) -> JobRef:
+        if job_id not in self._status:
+            raise NotFoundError(f"job_svc: job {job_id} not found")
+        return JobRef(
+            id=job_id, status=self._status[job_id], result=self._result.get(job_id, "")
+        )
 
     async def start_job(self, *, tenant_id: str, job_id: str) -> JobRef:
         # Approve resumes a paused run: job_svc transitions waiting_approval ->
@@ -83,6 +91,10 @@ class FakeJobGateway(JobGateway):
     # Test helper: simulate a worker driving a job to a terminal state.
     def set_status(self, job_id: str, status: str) -> None:
         self._status[job_id] = status
+
+    # Test helper: simulate a worker recording a job's final output.
+    def set_result(self, job_id: str, result: str) -> None:
+        self._result[job_id] = result
 
 
 @pytest.fixture

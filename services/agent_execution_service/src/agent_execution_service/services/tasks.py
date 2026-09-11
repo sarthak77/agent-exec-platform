@@ -16,21 +16,25 @@ That keeps the transition concurrency-safe even with many callers:
   - retry    -> job_svc RetryJob: only valid from failed/dead, likewise guarded.
 
 What this service does own is a local `tasks` row per submission and a snapshot
-of the job's status, refreshed on every mutating call from the authoritative
-Job that job_svc returns. GetTask then reads that snapshot locally instead of
-fanning out to job_svc on every read. The remote call is always made OUTSIDE a
-DB transaction so a slow/unreachable job_svc never pins a Postgres connection,
-and the snapshot write sets an absolute value (never a read-modify-write), so
-concurrent refreshes are last-writer-wins against the same source of truth
-rather than a lost-update race.
+of the job's status and final result, refreshed from the authoritative Job that
+job_svc returns on every mutating call and, for a task that has not yet reached
+a terminal state, on read as well: GetTask fetches the backing job so a job that
+ran to completion on its own in job_svc is reflected, while a terminal task is
+served straight from the local snapshot with no remote call. The remote call is
+always made OUTSIDE a DB transaction so a slow/unreachable job_svc never pins a
+Postgres connection, and the snapshot write sets an absolute value (never a
+read-modify-write), so concurrent refreshes are last-writer-wins against the
+same source of truth rather than a lost-update race.
 """
 
 from __future__ import annotations
 
+import asyncio
+
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from agent_execution_service.errors import NotFoundError
+from agent_execution_service.errors import AppError, NotFoundError
 from agent_execution_service.job_client import JobGateway, JobRef
 from agent_execution_service.models import TaskRow, new_id, now
 
@@ -53,6 +57,12 @@ def _task_status(job_status: str) -> str:
     return _TASK_STATUS_FROM_JOB.get(job_status, "pending")
 
 
+# A task in one of these states is finished: its backing job can no longer change
+# status or produce a new result, so GetTask serves it straight from the local
+# snapshot without refreshing from job_svc.
+_TERMINAL_STATUSES = frozenset({"completed", "failed"})
+
+
 class TaskService:
     def __init__(self, sessions: async_sessionmaker, jobs: JobGateway) -> None:
         self._sessions = sessions
@@ -68,17 +78,60 @@ class TaskService:
             input=input,
             job_id=ref.id,
             status=_task_status(ref.status),
+            result=ref.result,
         )
         async with self._sessions.begin() as session:
             session.add(row)
         return row
 
     async def get(self, *, tenant_id: str, ids: list[str]) -> list[TaskRow]:
+        rows = await self._load(tenant_id=tenant_id, ids=ids)
+        # A task's status/result drift between mutating calls because its job
+        # advances on its own in job_svc (the poller runs it to completion). So
+        # refresh any non-terminal task from the authoritative Job before
+        # returning; a terminal task can no longer change and is served straight
+        # from the local snapshot with no remote call.
+        stale = [row for row in rows if row.status not in _TERMINAL_STATUSES]
+        if stale and await self._refresh(tenant_id=tenant_id, rows=stale):
+            rows = await self._load(tenant_id=tenant_id, ids=ids)
+        return rows
+
+    async def _load(self, *, tenant_id: str, ids: list[str]) -> list[TaskRow]:
         async with self._sessions() as session:
             stmt = select(TaskRow).where(TaskRow.tenant_id == tenant_id)
             if ids:
                 stmt = stmt.where(TaskRow.id.in_(ids))
             return list((await session.scalars(stmt)).all())
+
+    async def _refresh(self, *, tenant_id: str, rows: list[TaskRow]) -> bool:
+        # Pull fresh Job snapshots concurrently and OUTSIDE any DB transaction (a
+        # slow/unreachable job_svc must never pin a Postgres connection), then
+        # persist only the tasks that actually changed. Each write is an
+        # absolute, tenant-scoped set (never a read-modify-write), so concurrent
+        # refreshes are last-writer-wins against the one source of truth. A
+        # per-task fetch failure is non-fatal: the stale snapshot is kept and
+        # retried on a later read, so a job_svc blip never fails the read.
+        async def fetch(row: TaskRow) -> tuple[str, str, str] | None:
+            try:
+                ref = await self._jobs.get_job(tenant_id=tenant_id, job_id=row.job_id)
+            except AppError:
+                return None
+            status = _task_status(ref.status)
+            if status == row.status and ref.result == row.result:
+                return None
+            return row.id, status, ref.result
+
+        changes = [c for c in await asyncio.gather(*(fetch(r) for r in rows)) if c is not None]
+        if not changes:
+            return False
+        async with self._sessions.begin() as session:
+            for task_id, status, result in changes:
+                await session.execute(
+                    update(TaskRow)
+                    .where(TaskRow.id == task_id, TaskRow.tenant_id == tenant_id)
+                    .values(status=status, result=result, updated_at=now())
+                )
+        return True
 
     async def approve(self, *, tenant_id: str, task_id: str) -> TaskRow:
         job_id = await self._job_id_for(tenant_id=tenant_id, task_id=task_id)
@@ -104,7 +157,7 @@ class TaskService:
             stmt = (
                 update(TaskRow)
                 .where(TaskRow.id == task_id, TaskRow.tenant_id == tenant_id)
-                .values(status=_task_status(ref.status), updated_at=now())
+                .values(status=_task_status(ref.status), result=ref.result, updated_at=now())
                 .returning(TaskRow)
             )
             row = (await session.execute(stmt)).scalar_one_or_none()

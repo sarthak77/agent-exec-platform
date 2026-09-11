@@ -123,7 +123,7 @@ class RetryJobResponse(_message.Message):
     def __init__(self, job: _Optional[_Union[Job, _Mapping]] = ...) -> None: ...
 
 class Job(_message.Message):
-    __slots__ = ("id", "type", "spec", "status", "attempts", "max_attempts", "metadata", "progress", "retry_count", "max_retries")
+    __slots__ = ("id", "type", "spec", "status", "attempts", "max_attempts", "metadata", "progress", "retry_count", "max_retries", "result")
     ID_FIELD_NUMBER: _ClassVar[int]
     TYPE_FIELD_NUMBER: _ClassVar[int]
     SPEC_FIELD_NUMBER: _ClassVar[int]
@@ -134,6 +134,7 @@ class Job(_message.Message):
     PROGRESS_FIELD_NUMBER: _ClassVar[int]
     RETRY_COUNT_FIELD_NUMBER: _ClassVar[int]
     MAX_RETRIES_FIELD_NUMBER: _ClassVar[int]
+    RESULT_FIELD_NUMBER: _ClassVar[int]
     id: str
     type: JobType
     spec: JobSpec
@@ -144,7 +145,8 @@ class Job(_message.Message):
     progress: JobProgress
     retry_count: int
     max_retries: int
-    def __init__(self, id: _Optional[str] = ..., type: _Optional[_Union[JobType, str]] = ..., spec: _Optional[_Union[JobSpec, _Mapping]] = ..., status: _Optional[_Union[JobStatus, str]] = ..., attempts: _Optional[int] = ..., max_attempts: _Optional[int] = ..., metadata: _Optional[_Union[JobMetadata, _Mapping]] = ..., progress: _Optional[_Union[JobProgress, _Mapping]] = ..., retry_count: _Optional[int] = ..., max_retries: _Optional[int] = ...) -> None: ...
+    result: JobResult
+    def __init__(self, id: _Optional[str] = ..., type: _Optional[_Union[JobType, str]] = ..., spec: _Optional[_Union[JobSpec, _Mapping]] = ..., status: _Optional[_Union[JobStatus, str]] = ..., attempts: _Optional[int] = ..., max_attempts: _Optional[int] = ..., metadata: _Optional[_Union[JobMetadata, _Mapping]] = ..., progress: _Optional[_Union[JobProgress, _Mapping]] = ..., retry_count: _Optional[int] = ..., max_retries: _Optional[int] = ..., result: _Optional[_Union[JobResult, _Mapping]] = ...) -> None: ...
 
 class JobProgress(_message.Message):
     __slots__ = ("phase", "plan", "steps", "error", "result")
@@ -191,6 +193,18 @@ class AgentExecutionSpec(_message.Message):
     llm_config: LLMConfig
     tool_config: ToolConfig
     def __init__(self, name: _Optional[str] = ..., instructions: _Optional[str] = ..., llm_config: _Optional[_Union[LLMConfig, _Mapping]] = ..., tool_config: _Optional[_Union[ToolConfig, _Mapping]] = ...) -> None: ...
+
+class JobResult(_message.Message):
+    __slots__ = ("agent_execution_result",)
+    AGENT_EXECUTION_RESULT_FIELD_NUMBER: _ClassVar[int]
+    agent_execution_result: AgentExecutionResult
+    def __init__(self, agent_execution_result: _Optional[_Union[AgentExecutionResult, _Mapping]] = ...) -> None: ...
+
+class AgentExecutionResult(_message.Message):
+    __slots__ = ("output",)
+    OUTPUT_FIELD_NUMBER: _ClassVar[int]
+    output: str
+    def __init__(self, output: _Optional[str] = ...) -> None: ...
 
 class LLMConfig(_message.Message):
     __slots__ = ("name", "temperature")

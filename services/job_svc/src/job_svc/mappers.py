@@ -84,6 +84,20 @@ def progress_to_proto(progress: dict | None) -> service_pb2.JobProgress:
     )
 
 
+def result_to_proto(row: JobRow) -> service_pb2.JobResult | None:
+    # The final answer is checkpointed to progress["result"] on success (see
+    # runner._finalize); surface it as the type-keyed JobResult (mirrors
+    # JobSpec). Left unset until the job has actually produced an output, so a
+    # caller can distinguish "no result yet" from an empty answer via the oneof.
+    progress = row.progress or {}
+    output = progress.get("result")
+    if not output:
+        return None
+    return service_pb2.JobResult(
+        agent_execution_result=service_pb2.AgentExecutionResult(output=output)
+    )
+
+
 def job_to_proto(row: JobRow) -> service_pb2.Job:
     return service_pb2.Job(
         id=row.id,
@@ -99,4 +113,5 @@ def job_to_proto(row: JobRow) -> service_pb2.Job:
             updated_at=dt_to_ts(row.updated_at),
         ),
         progress=progress_to_proto(row.progress),
+        result=result_to_proto(row),
     )

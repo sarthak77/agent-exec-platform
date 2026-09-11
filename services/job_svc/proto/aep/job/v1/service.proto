@@ -87,6 +87,7 @@ message Job {
   // max_attempts, which track the automatic (no-caller-involved) retry cycle.
   int32 retry_count = 11;
   int32 max_retries = 12;
+  JobResult result = 13; // final result, keyed by JobType (mirrors JobSpec)
 }
 
 // Execution checkpoint the runner maintains: the prompt decomposition plan and
@@ -139,6 +140,16 @@ message AgentExecutionSpec {
   string instructions = 2;
   LLMConfig llm_config = 3;
   ToolConfig tool_config = 4;
+}
+
+message JobResult {
+  oneof result {
+    AgentExecutionResult agent_execution_result = 1;
+  }
+}
+
+message AgentExecutionResult {
+  string output = 1; // the agent's final answer
 }
 
 message LLMConfig {

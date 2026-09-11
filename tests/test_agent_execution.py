@@ -388,11 +388,10 @@ class TestAgentExecutionPlatform:
             )
             job_id = created_task.task.job_id
 
-        # AES's GetTask won't help here: TaskService only refreshes its local
-        # status snapshot on a mutating call (approve/retry), so it never
-        # reflects a job that simply runs to completion on its own. Poll
-        # job_svc's own database instead — the authoritative source, and
-        # where the agent's actual output ends up (see ServiceManager.get_job).
+        # Poll job_svc's own database for the per-step progress this assertion
+        # checks: it is the authoritative source and carries the full step trail
+        # (AES's GetTask now refreshes and surfaces the final result, but not the
+        # individual steps). See ServiceManager.get_job.
         deadline = time.monotonic() + 90.0
         job = await self.manager.get_job(job_id)
         while job["status"] in _IN_FLIGHT_JOB_STATUSES:

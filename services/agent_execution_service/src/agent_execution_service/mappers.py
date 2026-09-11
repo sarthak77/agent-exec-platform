@@ -61,7 +61,7 @@ def tool_to_proto(row: ToolRow) -> service_pb2.Tool:
 
 
 def task_to_proto(row: TaskRow) -> service_pb2.Task:
-    return service_pb2.Task(
+    kwargs = dict(
         id=row.id,
         input=row.input,
         job_id=row.job_id,
@@ -71,3 +71,8 @@ def task_to_proto(row: TaskRow) -> service_pb2.Task:
             updated_at=dt_to_ts(row.updated_at),
         ),
     )
+    # Leave `result` unset until the backing job has produced an output, so a
+    # client can tell "not done yet" from an empty answer.
+    if row.result:
+        kwargs["result"] = service_pb2.TaskResult(output=row.result)
+    return service_pb2.Task(**kwargs)

@@ -230,13 +230,11 @@ class ServiceManager:
         """Read a job's live status and checkpointed progress (plan + per-step
         outputs) straight out of job_svc's own database.
 
-        Tests poll this rather than AES's GetTask: TaskService only refreshes
-        its local status snapshot on a *mutating* call (approve/retry) that
-        round-trips to job_svc, so a task left to run on its own after
-        CreateTask stays reported as "pending" even once the underlying job
-        has finished. Neither the Task nor the Job proto surfaces the agent's
-        actual output either (see job_svc's JobRunner, which persists it to
-        `jobs.progress`), so this is also how tests see the real answer.
+        Tests poll this for the job's *full* checkpointed progress -- the plan
+        and every step's output -- which no proto surfaces (the Task/Job
+        `result` fields carry only the final answer, not the per-step trail).
+        job_svc's JobRunner persists that trail to `jobs.progress`, so reading
+        it straight from the database here is how tests inspect the real work.
         """
         import json
 
