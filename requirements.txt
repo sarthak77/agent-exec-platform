@@ -1,0 +1,36 @@
+# ---------------------------------------------------------------------------
+# AI Agent Execution Platform -- end-to-end (e2e) test requirements
+# ---------------------------------------------------------------------------
+# Dependencies for the process that RUNS the e2e suite in tests/ -- the pytest
+# test-runner, which drives the services as a gRPC client, reads Postgres
+# directly to assert real state, and runs async tests. Mirrors the deps in
+# tests/pyproject.toml.
+#
+#     pip install -r requirements.txt
+#     pytest tests/ -v                 # (or: cd tests && pytest -v)
+#
+# IMPORTANT -- this installs ONLY the test-runner's own dependencies. The e2e
+# harness boots the five services as subprocesses via `uv run` in each service
+# directory, so actually running the suite still requires (see README
+# "Testing"):
+#   * `uv` on PATH                 -- launches each service in its own pinned env
+#   * PostgreSQL on localhost:5432 -- harness creates the two databases + seeds
+#   * a model API key              -- MODEL_API_KEY / GROQ_API_KEY (for gateway)
+#
+# The gRPC stubs the tests import are reused from
+# services/agent_execution_service/src (put on sys.path by tests/conftest.py),
+# so protobuf here matches the major those stubs were built with (6.x).
+# ---------------------------------------------------------------------------
+
+# gRPC client used to talk to the running services.
+grpcio>=1.75
+# Pinned to the protobuf major the AES stubs were generated with (6.x).
+protobuf>=6.32
+
+# Async Postgres driver: create the per-service databases at startup and read
+# job_svc's / AES's tables directly to assert real state.
+asyncpg>=0.30
+
+# Test framework; async tests run without an explicit marker (asyncio_mode=auto).
+pytest>=8
+pytest-asyncio>=0.24
