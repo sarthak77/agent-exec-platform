@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n!aep/orchestrator/v1/service.proto\x12\x13\x61\x65p.orchestrator.v1\"=\n\x0b\x43hatRequest\x12.\n\x08messages\x18\x01 \x03(\x0b\x32\x1c.aep.orchestrator.v1.Message\"7\n\x07Message\x12\x0c\n\x04role\x18\x01 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x02 \x01(\t\x12\r\n\x05\x61gent\x18\x03 \x01(\t\"\x8b\x01\n\x0c\x43hatResponse\x12.\n\x08messages\x18\x01 \x03(\x0b\x32\x1c.aep.orchestrator.v1.Message\x12\x34\n\x0btoken_usage\x18\x02 \x01(\x0b\x32\x1f.aep.orchestrator.v1.TokenUsage\x12\x15\n\rfinish_reason\x18\x03 \x01(\t\"T\n\nTokenUsage\x12\x15\n\rprompt_tokens\x18\x01 \x01(\x03\x12\x19\n\x11\x63ompletion_tokens\x18\x02 \x01(\x03\x12\x14\n\x0ctotal_tokens\x18\x03 \x01(\x03\x32\x62\n\x13OrchestratorService\x12K\n\x04\x43hat\x12 .aep.orchestrator.v1.ChatRequest\x1a!.aep.orchestrator.v1.ChatResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n!aep/orchestrator/v1/service.proto\x12\x13\x61\x65p.orchestrator.v1\"O\n\x0b\x43hatRequest\x12.\n\x08messages\x18\x01 \x03(\x0b\x32\x1c.aep.orchestrator.v1.Message\x12\x10\n\x08\x61pproved\x18\x02 \x01(\x08\"7\n\x07Message\x12\x0c\n\x04role\x18\x01 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x02 \x01(\t\x12\r\n\x05\x61gent\x18\x03 \x01(\t\"\x8b\x01\n\x0c\x43hatResponse\x12.\n\x08messages\x18\x01 \x03(\x0b\x32\x1c.aep.orchestrator.v1.Message\x12\x34\n\x0btoken_usage\x18\x02 \x01(\x0b\x32\x1f.aep.orchestrator.v1.TokenUsage\x12\x15\n\rfinish_reason\x18\x03 \x01(\t\"T\n\nTokenUsage\x12\x15\n\rprompt_tokens\x18\x01 \x01(\x03\x12\x19\n\x11\x63ompletion_tokens\x18\x02 \x01(\x03\x12\x14\n\x0ctotal_tokens\x18\x03 \x01(\x03\x32\x62\n\x13OrchestratorService\x12K\n\x04\x43hat\x12 .aep.orchestrator.v1.ChatRequest\x1a!.aep.orchestrator.v1.ChatResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -32,13 +32,13 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'aep.orchestrator.v1.service
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_CHATREQUEST']._serialized_start=58
-  _globals['_CHATREQUEST']._serialized_end=119
-  _globals['_MESSAGE']._serialized_start=121
-  _globals['_MESSAGE']._serialized_end=176
-  _globals['_CHATRESPONSE']._serialized_start=179
-  _globals['_CHATRESPONSE']._serialized_end=318
-  _globals['_TOKENUSAGE']._serialized_start=320
-  _globals['_TOKENUSAGE']._serialized_end=404
-  _globals['_ORCHESTRATORSERVICE']._serialized_start=406
-  _globals['_ORCHESTRATORSERVICE']._serialized_end=504
+  _globals['_CHATREQUEST']._serialized_end=137
+  _globals['_MESSAGE']._serialized_start=139
+  _globals['_MESSAGE']._serialized_end=194
+  _globals['_CHATRESPONSE']._serialized_start=197
+  _globals['_CHATRESPONSE']._serialized_end=336
+  _globals['_TOKENUSAGE']._serialized_start=338
+  _globals['_TOKENUSAGE']._serialized_end=422
+  _globals['_ORCHESTRATORSERVICE']._serialized_start=424
+  _globals['_ORCHESTRATORSERVICE']._serialized_end=522
 # @@protoc_insertion_point(module_scope)

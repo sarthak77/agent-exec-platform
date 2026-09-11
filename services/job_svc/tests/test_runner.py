@@ -389,6 +389,60 @@ async def test_resume_after_approval_completes_the_job(service) -> None:
     assert orchestrator.exec_calls == ["retrieve", "send", "send"]
 
 
+# --- one-shot `approved` flag (mutating-tool approval gate) ----------------
+
+
+async def test_normal_steps_are_never_marked_approved(service, orchestrator) -> None:
+    orchestrator.plan = ["a", "b"]
+    runner = JobRunner(service, orchestrator)
+    row = await _claimed(service)
+
+    await runner.run(row)
+
+    assert orchestrator.approved_calls == [False, False]
+
+
+async def test_pauses_on_mutation_gate_when_not_approved(service) -> None:
+    orchestrator = FakeOrchestrator(plan=["retrieve", "mutate"], mutation_gate_on={"mutate"})
+    runner = JobRunner(service, orchestrator)
+    row = await _claimed(service)
+
+    await runner.run(row)
+
+    paused = await _fetch(service, row.id)
+    assert paused.status == "waiting_approval"
+    assert paused.progress["pending_approval"]["step"] == 1
+    assert set(paused.progress["steps"]) == {"0"}
+
+
+async def test_resume_after_mutation_approval_passes_approved_only_for_that_step(
+    service,
+) -> None:
+    orchestrator = FakeOrchestrator(
+        plan=["retrieve", "mutate", "notify"], mutation_gate_on={"mutate"}
+    )
+    runner = JobRunner(service, orchestrator)
+    row = await _claimed(service)
+    await runner.run(row)
+    assert (await _fetch(service, row.id)).status == "waiting_approval"
+
+    # Approve: requeue (waiting_approval -> queued) and re-claim, exactly as
+    # ApproveTask + the poller would. The gate config is untouched -- unlike
+    # the durable approve_on pattern, nothing needs to be cleared out-of-band.
+    await service.update(tenant_id=TENANT, job_id=row.id, status="queued")
+    resumed = await claim_one(service)
+
+    await runner.run(resumed)
+
+    done = await _fetch(service, row.id)
+    assert done.status == "succeeded"
+    assert set(done.progress["steps"]) == {"0", "1", "2"}
+    # approved=True only on the resumed "mutate" call; every other exec call
+    # (including the later "notify" step, which never paused) is unapproved.
+    assert orchestrator.exec_calls == ["retrieve", "mutate", "mutate", "notify"]
+    assert orchestrator.approved_calls == [False, False, True, False]
+
+
 # --- dispatch by job type --------------------------------------------------
 
 

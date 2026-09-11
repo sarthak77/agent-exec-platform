@@ -64,8 +64,10 @@ def _to_transcript(
     ]
 
 
-async def run_chat(tenant_id: str, messages: Sequence[InputMessage]) -> ChatResult:
-    session = await build_group_chat(tenant_id)
+async def run_chat(
+    tenant_id: str, messages: Sequence[InputMessage], approved: bool = False
+) -> ChatResult:
+    session = await build_group_chat(tenant_id, approved=approved)
     task = [TextMessage(content=m.content, source=m.role or "user") for m in messages]
 
     # output_task_messages=False keeps the caller's echoed input out of the

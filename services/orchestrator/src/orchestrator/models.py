@@ -38,6 +38,7 @@ class ToolRow(Base):
     tenant_id: Mapped[str] = mapped_column(index=True)
     name: Mapped[str]
     description: Mapped[str | None]
+    mutating: Mapped[bool]
     version: Mapped[int]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

@@ -6,10 +6,12 @@ from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Map
 DESCRIPTOR: _descriptor.FileDescriptor
 
 class ChatRequest(_message.Message):
-    __slots__ = ("messages",)
+    __slots__ = ("messages", "approved")
     MESSAGES_FIELD_NUMBER: _ClassVar[int]
+    APPROVED_FIELD_NUMBER: _ClassVar[int]
     messages: _containers.RepeatedCompositeFieldContainer[Message]
-    def __init__(self, messages: _Optional[_Iterable[_Union[Message, _Mapping]]] = ...) -> None: ...
+    approved: bool
+    def __init__(self, messages: _Optional[_Iterable[_Union[Message, _Mapping]]] = ..., approved: bool = ...) -> None: ...
 
 class Message(_message.Message):
     __slots__ = ("role", "content", "agent")

@@ -27,13 +27,6 @@ def test_unknown_type_value_rejected() -> None:
         JobValidator.validate_type(9999)
 
 
-def test_non_creatable_type_rejected() -> None:
-    # JOB_TYPE_MUTATION maps to a known domain string but has no JobSpec case
-    # and no registered runner, so it must not be creatable via CreateJob.
-    with pytest.raises(ValidationError, match="type is required"):
-        JobValidator.validate_type(service_pb2.JOB_TYPE_MUTATION)
-
-
 # --- validate_spec ----------------------------------------------------------
 
 

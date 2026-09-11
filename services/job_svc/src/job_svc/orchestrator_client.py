@@ -51,7 +51,9 @@ class OrchestratorGateway(Protocol):
     """What the runner needs from the orchestrator. Kept protobuf-free so it is
     trivial to fake in tests."""
 
-    async def chat(self, *, tenant_id: str, messages: list[ChatTurn]) -> ChatReply: ...
+    async def chat(
+        self, *, tenant_id: str, messages: list[ChatTurn], approved: bool = False
+    ) -> ChatReply: ...
 
 
 def _md(tenant_id: str) -> list[tuple[str, str]]:
@@ -88,9 +90,12 @@ class OrchestratorClient(OrchestratorGateway):
             self._channel = None
             self._stub = None
 
-    async def chat(self, *, tenant_id: str, messages: list[ChatTurn]) -> ChatReply:
+    async def chat(
+        self, *, tenant_id: str, messages: list[ChatTurn], approved: bool = False
+    ) -> ChatReply:
         request = service_pb2.ChatRequest(
-            messages=[service_pb2.Message(role=t.role, content=t.content) for t in messages]
+            messages=[service_pb2.Message(role=t.role, content=t.content) for t in messages],
+            approved=approved,
         )
         try:
             response = await self._get_stub().Chat(request, metadata=_md(tenant_id))

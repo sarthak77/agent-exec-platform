@@ -66,8 +66,8 @@ async def serve() -> None:
             default_max_retries=settings.jobs.default_max_retries,
         )
         # Register a runner per job type; the dispatcher picks the right one off
-        # each claimed job's type. Types with no runner (e.g. "mutation", not
-        # yet implemented) are failed by the dispatcher rather than run.
+        # each claimed job's type. A type with no runner is failed by the
+        # dispatcher rather than run.
         # Heartbeat at a third of the lease so a run tolerates a couple of
         # missed renewals before the reaper would consider it abandoned.
         agent_runner = JobRunner(

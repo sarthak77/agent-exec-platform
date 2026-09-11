@@ -78,6 +78,7 @@ class FakeOrchestrator(OrchestratorGateway):
         plan: list[str] | None = None,
         fail_on: set[str] | None = None,
         approve_on: set[str] | None = None,
+        mutation_gate_on: set[str] | None = None,
         delay_seconds: float = 0.0,
     ) -> None:
         self.plan = ["step one", "step two"] if plan is None else plan
@@ -86,13 +87,21 @@ class FakeOrchestrator(OrchestratorGateway):
         # (as the orchestrator would when a tool paused on a human-approval
         # gate), so the runner's waiting_approval path can be exercised.
         self.approve_on = approve_on or set()
+        # Sub-prompts that simulate calling a *mutating* tool (see
+        # AgentToolWorkbench): pauses on the one-shot `approved` flag the
+        # runner threads through, rather than needing any config cleared to
+        # "resume" -- unlike `approve_on`'s durable/out-of-band pattern.
+        self.mutation_gate_on = mutation_gate_on or set()
         # Simulates a slow orchestrator call (e.g. a long LLM turn) so tests
         # can exercise behavior that only matters while a step is in flight,
         # like the runner's lease-renewal heartbeat.
         self.delay_seconds = delay_seconds
         self.calls: list[tuple[str, str]] = []  # (kind, user content)
+        self.approved_calls: list[bool] = []  # `approved` seen on each exec call
 
-    async def chat(self, *, tenant_id: str, messages: list[ChatTurn]) -> ChatReply:
+    async def chat(
+        self, *, tenant_id: str, messages: list[ChatTurn], approved: bool = False
+    ) -> ChatReply:
         if self.delay_seconds:
             await asyncio.sleep(self.delay_seconds)
         is_plan = any(t.role == "system" for t in messages)
@@ -102,11 +111,17 @@ class FakeOrchestrator(OrchestratorGateway):
             if "plan" in self.fail_on:
                 raise DependencyError("orchestrator: planning failed")
             return ChatReply(content=json.dumps(self.plan), finish_reason="stop")
+        self.approved_calls.append(approved)
         if user in self.fail_on:
             raise DependencyError(f"orchestrator: exec failed for {user!r}")
         if user in self.approve_on:
             return ChatReply(
                 content="APPROVAL_REQUIRED: awaiting human approval",
+                finish_reason="requires_approval",
+            )
+        if user in self.mutation_gate_on and not approved:
+            return ChatReply(
+                content="APPROVAL_REQUIRED: mutating action requires approval",
                 finish_reason="requires_approval",
             )
         return ChatReply(content=f"done: {user}", finish_reason="stop", agent="tester")

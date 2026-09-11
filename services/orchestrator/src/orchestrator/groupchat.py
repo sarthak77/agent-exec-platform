@@ -85,7 +85,7 @@ class GroupChatSession:
         return [item for wb in self._workbenches for item in wb.pending_approvals]
 
 
-async def build_group_chat(tenant_id: str) -> GroupChatSession:
+async def build_group_chat(tenant_id: str, approved: bool = False) -> GroupChatSession:
     async with Sessions() as session:
         agent_specs = await list_agents_for_tenant(session, tenant_id)
     if not agent_specs:
@@ -103,7 +103,9 @@ async def build_group_chat(tenant_id: str) -> GroupChatSession:
         name_by_slug[slug] = spec.name
         client = GatewayChatCompletionClient(temperature=spec.llm_config_temperature, stub=stub)
         clients.append(client)
-        workbench = AgentToolWorkbench(tenant_id, spec.tool_names)
+        workbench = AgentToolWorkbench(
+            tenant_id, spec.tool_names, spec.mutating_tool_names, approved=approved
+        )
         workbenches.append(workbench)
         participants.append(
             AssistantAgent(

@@ -25,7 +25,6 @@ STATUS_FROM_PROTO = {v: k for k, v in _STATUS_TO_PROTO.items()}
 
 _TYPE_TO_PROTO = {
     "agent_execution": service_pb2.JOB_TYPE_AGENT_EXECUTION,
-    "mutation": service_pb2.JOB_TYPE_MUTATION,
 }
 TYPE_FROM_PROTO = {v: k for k, v in _TYPE_TO_PROTO.items()}
 

@@ -114,7 +114,7 @@ class _FakeSessionObj:
 
 
 def _patch_build(monkeypatch, sink: list[str]) -> None:
-    async def fake_build(tenant_id):  # noqa: ANN001
+    async def fake_build(tenant_id, approved=False):  # noqa: ANN001
         return _FakeSessionObj(sink)
 
     monkeypatch.setattr(run, "build_group_chat", fake_build)
@@ -130,3 +130,60 @@ async def test_run_chat_uses_stop_reason_when_no_approval(monkeypatch) -> None:
     _patch_build(monkeypatch, [])
     result = await run.run_chat("t1", [])
     assert result.finish_reason == "max messages reached"
+
+
+async def test_run_chat_forwards_approved_to_build_group_chat(monkeypatch) -> None:
+    seen: list[bool] = []
+
+    async def fake_build(tenant_id, approved=False):  # noqa: ANN001
+        seen.append(approved)
+        return _FakeSessionObj([])
+
+    monkeypatch.setattr(run, "build_group_chat", fake_build)
+
+    await run.run_chat("t1", [], approved=True)
+
+    assert seen == [True]
+
+
+# --- mutating-tool approval gate (AgentToolWorkbench) -----------------------
+
+
+async def test_mutating_tool_refused_locally_when_not_approved(monkeypatch) -> None:
+    # A refused mutating call must never reach mcp_svc -- patch _mcp_session to
+    # blow up if entered, proving the refusal happens before that point.
+    async def fail_session(tenant_id):  # noqa: ANN001
+        raise AssertionError("mcp_svc must not be called for an unapproved mutating tool")
+
+    monkeypatch.setattr(mcp_workbench, "_mcp_session", fail_session)
+    wb = AgentToolWorkbench("t1", ["delete_record"], mutating_tool_names=["delete_record"])
+
+    result = await wb.call_tool("delete_record", {"id": "1"})
+
+    assert APPROVAL_REQUIRED_MARKER in result.result[0].content
+    assert result.is_error is False
+    assert wb.pending_approvals and APPROVAL_REQUIRED_MARKER in wb.pending_approvals[0]
+
+
+async def test_mutating_tool_runs_when_approved(monkeypatch) -> None:
+    _patch_session(monkeypatch, '{"deleted": true}')
+    wb = AgentToolWorkbench(
+        "t1", ["delete_record"], mutating_tool_names=["delete_record"], approved=True
+    )
+
+    result = await wb.call_tool("delete_record", {"id": "1"})
+
+    assert wb.pending_approvals == []
+    assert "deleted" in result.result[0].content
+
+
+async def test_non_mutating_tool_runs_regardless_of_approved(monkeypatch) -> None:
+    _patch_session(monkeypatch, '{"invoices": []}')
+    wb = AgentToolWorkbench(
+        "t1", ["retrieve_invoices"], mutating_tool_names=["delete_record"], approved=False
+    )
+
+    result = await wb.call_tool("retrieve_invoices", {})
+
+    assert wb.pending_approvals == []
+    assert "invoices" in result.result[0].content

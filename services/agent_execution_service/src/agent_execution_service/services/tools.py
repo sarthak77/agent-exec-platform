@@ -19,8 +19,12 @@ class ToolService:
     def __init__(self, sessions: async_sessionmaker) -> None:
         self._sessions = sessions
 
-    async def create(self, *, tenant_id: str, name: str, description: str | None) -> ToolRow:
-        row = ToolRow(id=new_id(), tenant_id=tenant_id, name=name, description=description)
+    async def create(
+        self, *, tenant_id: str, name: str, description: str | None, mutating: bool = False
+    ) -> ToolRow:
+        row = ToolRow(
+            id=new_id(), tenant_id=tenant_id, name=name, description=description, mutating=mutating
+        )
         async with self._sessions.begin() as session:
             session.add(row)
             await _flush_or_conflict(session, name)
@@ -33,13 +37,16 @@ class ToolService:
                 stmt = stmt.where(ToolRow.id.in_(ids))
             return list((await session.scalars(stmt)).all())
 
-    async def update(self, *, tenant_id: str, tool_id: str, name: str, description: str) -> ToolRow:
+    async def update(
+        self, *, tenant_id: str, tool_id: str, name: str, description: str, mutating: bool
+    ) -> ToolRow:
         async with self._sessions.begin() as session:
             row = await session.get(ToolRow, tool_id)
             if row is None or row.tenant_id != tenant_id:
                 raise NotFoundError(f"tool {tool_id} not found")
             row.name = name
             row.description = description or None
+            row.mutating = mutating
             row.version += 1
             row.updated_at = now()
             await _flush_or_conflict(session, name)

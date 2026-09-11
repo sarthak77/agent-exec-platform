@@ -102,7 +102,7 @@ async def test_get_filters_by_type(service) -> None:
     a = await _create(service)
     rows = await service.get(tenant_id=TENANT, ids=[], statuses=[], types=["agent_execution"])
     assert [r.id for r in rows] == [a.id]
-    assert await service.get(tenant_id=TENANT, ids=[], statuses=[], types=["mutation"]) == []
+    assert await service.get(tenant_id=TENANT, ids=[], statuses=[], types=["other_type"]) == []
 
 
 # --- update: running (claim/start accounting) ------------------------------

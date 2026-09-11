@@ -138,6 +138,7 @@ class AgentExecutionServicer(service_pb2_grpc.AgentExecutionServiceServicer):
             tenant_id=tenant_id,
             name=request.name,
             description=request.description if request.HasField("description") else None,
+            mutating=request.mutating,
         )
         return service_pb2.CreateToolResponse(tool=tool_to_proto(row))
 
@@ -159,6 +160,7 @@ class AgentExecutionServicer(service_pb2_grpc.AgentExecutionServiceServicer):
             tool_id=request.id,
             name=request.name,
             description=request.description,
+            mutating=request.mutating,
         )
         return service_pb2.UpdateToolResponse(tool=tool_to_proto(row))
 

@@ -23,9 +23,6 @@ MAX_FILTER_IDS = 1_000
 # Types accepted by CreateJob. This is a subset of TYPE_FROM_PROTO's domain:
 # TYPE_FROM_PROTO/STATUS_FROM_PROTO also back read-side filters (GetJob), where
 # a type with no runner is still a legitimate value to filter existing rows by.
-# "mutation" has a JobType enum value but no JobSpec oneof case and no
-# registered runner (see job_svc/main.py) — accepting it at creation would let
-# a job burn its entire retry budget only to fail every attempt.
 _CREATABLE_TYPES = {"agent_execution"}
 
 

@@ -99,12 +99,6 @@ async def test_create_job_zero_max_attempts_invalid_argument(servicer) -> None:
     assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
 
 
-async def test_create_job_mutation_type_invalid_argument(servicer) -> None:
-    with pytest.raises(Aborted) as exc:
-        await servicer.CreateJob(_create_req(type=service_pb2.JOB_TYPE_MUTATION), FakeContext())
-    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
-
-
 async def test_create_job_missing_spec_invalid_argument(servicer) -> None:
     with pytest.raises(Aborted) as exc:
         await servicer.CreateJob(

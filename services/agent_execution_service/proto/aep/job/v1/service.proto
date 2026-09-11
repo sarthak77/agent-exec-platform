@@ -79,7 +79,6 @@ message Job {
 enum JobType {
   JOB_TYPE_UNSPECIFIED = 0;
   JOB_TYPE_AGENT_EXECUTION = 1;
-  JOB_TYPE_MUTATION = 3;
 }
 
 message JobSpec {

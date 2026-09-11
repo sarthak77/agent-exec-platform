@@ -25,7 +25,6 @@ class JobType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     JOB_TYPE_UNSPECIFIED: _ClassVar[JobType]
     JOB_TYPE_AGENT_EXECUTION: _ClassVar[JobType]
-    JOB_TYPE_MUTATION: _ClassVar[JobType]
 JOB_STATUS_UNSPECIFIED: JobStatus
 JOB_STATUS_QUEUED: JobStatus
 JOB_STATUS_RUNNING: JobStatus
@@ -36,7 +35,6 @@ JOB_STATUS_CANCELLED: JobStatus
 JOB_STATUS_WAITING_APPROVAL: JobStatus
 JOB_TYPE_UNSPECIFIED: JobType
 JOB_TYPE_AGENT_EXECUTION: JobType
-JOB_TYPE_MUTATION: JobType
 
 class CreateJobRequest(_message.Message):
     __slots__ = ("type", "spec", "max_attempts", "max_retries")

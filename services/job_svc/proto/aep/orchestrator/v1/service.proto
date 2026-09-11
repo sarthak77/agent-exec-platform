@@ -14,6 +14,10 @@ service OrchestratorService {
 
 message ChatRequest {
   repeated Message messages = 1;
+  // One-shot signal that this call resumes a step that previously paused on
+  // a human-approval gate (see AgentToolWorkbench): mutating tool calls are
+  // allowed to run for this call only, not granted durably.
+  bool approved = 2;
 }
 
 message Message {

@@ -26,12 +26,14 @@ TASK_STATUS_COMPLETED: TaskStatus
 TASK_STATUS_FAILED: TaskStatus
 
 class CreateToolRequest(_message.Message):
-    __slots__ = ("name", "description")
+    __slots__ = ("name", "description", "mutating")
     NAME_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    MUTATING_FIELD_NUMBER: _ClassVar[int]
     name: str
     description: str
-    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ...) -> None: ...
+    mutating: bool
+    def __init__(self, name: _Optional[str] = ..., description: _Optional[str] = ..., mutating: _Optional[bool] = ...) -> None: ...
 
 class CreateToolResponse(_message.Message):
     __slots__ = ("tool",)
@@ -58,14 +60,16 @@ class GetToolResponse(_message.Message):
     def __init__(self, tools: _Optional[_Iterable[_Union[Tool, _Mapping]]] = ...) -> None: ...
 
 class UpdateToolRequest(_message.Message):
-    __slots__ = ("id", "name", "description")
+    __slots__ = ("id", "name", "description", "mutating")
     ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    MUTATING_FIELD_NUMBER: _ClassVar[int]
     id: str
     name: str
     description: str
-    def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., description: _Optional[str] = ...) -> None: ...
+    mutating: bool
+    def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., description: _Optional[str] = ..., mutating: _Optional[bool] = ...) -> None: ...
 
 class UpdateToolResponse(_message.Message):
     __slots__ = ("tool",)
@@ -248,16 +252,18 @@ class AgentMetadata(_message.Message):
     def __init__(self, version: _Optional[int] = ..., created_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
 class Tool(_message.Message):
-    __slots__ = ("id", "name", "description", "metadata")
+    __slots__ = ("id", "name", "description", "metadata", "mutating")
     ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
     METADATA_FIELD_NUMBER: _ClassVar[int]
+    MUTATING_FIELD_NUMBER: _ClassVar[int]
     id: str
     name: str
     description: str
     metadata: ToolMetadata
-    def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., description: _Optional[str] = ..., metadata: _Optional[_Union[ToolMetadata, _Mapping]] = ...) -> None: ...
+    mutating: bool
+    def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., description: _Optional[str] = ..., metadata: _Optional[_Union[ToolMetadata, _Mapping]] = ..., mutating: _Optional[bool] = ...) -> None: ...
 
 class ToolMetadata(_message.Message):
     __slots__ = ("version", "created_at", "updated_at")

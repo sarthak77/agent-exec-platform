@@ -191,9 +191,16 @@ class JobRunner:
             if key in steps:
                 continue  # already completed on a prior attempt -> skip (idempotent)
 
+            # True only for the exact step that previously paused on an
+            # approval gate: a caller approving a job grants a fresh chance
+            # for THAT step to proceed, not a durable bypass for every future
+            # mutating call the job might make.
+            pending = progress.get("pending_approval")
+            approved = bool(pending) and pending.get("step") == index
             reply = await self._orchestrator.chat(
                 tenant_id=row.tenant_id,
                 messages=[ChatTurn(role="user", content=sub_prompt)],
+                approved=approved,
             )
             if reply.finish_reason == APPROVAL_FINISH_REASON:
                 # A tool paused this step on a human-approval gate. Record the
@@ -272,9 +279,9 @@ class RunnerDispatcher:
 
     The poller hands every claimed job to a single `Runner` callable; this
     dispatcher is that callable. It looks the job's `type` up in a
-    type -> runner registry and delegates, so distinct job types (agent
-    execution, mutation, ...) can be executed by distinct runners while the
-    poller itself stays type-agnostic. `type` is the domain string stored on
+    type -> runner registry and delegates, so distinct job types can be
+    executed by distinct runners while the poller itself stays type-agnostic.
+    `type` is the domain string stored on
     the row (see mappers.TYPE_FROM_PROTO), so the registry is keyed by those
     same values.
 

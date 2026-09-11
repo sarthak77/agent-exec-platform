@@ -24,6 +24,9 @@ service AgentExecutionService {
 message CreateToolRequest {
   string name = 1;
   optional string description = 2;
+  // If true, every call to this tool by any agent must be approved by a
+  // human before it runs (see AgentToolWorkbench in orchestrator).
+  bool mutating = 3;
 }
 
 message CreateToolResponse {
@@ -46,6 +49,7 @@ message UpdateToolRequest {
   string id = 1;
   string name = 2;
   string description = 3;
+  bool mutating = 4;
 }
 
 message UpdateToolResponse {
@@ -168,6 +172,9 @@ message Tool {
   string name = 2;
   optional string description = 3;
   ToolMetadata metadata = 4;
+  // If true, every call to this tool by any agent must be approved by a
+  // human before it runs (see AgentToolWorkbench in orchestrator).
+  bool mutating = 5;
 }
 
 message ToolMetadata {

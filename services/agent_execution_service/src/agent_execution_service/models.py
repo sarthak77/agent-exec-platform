@@ -53,6 +53,9 @@ class ToolRow(Base):
     tenant_id: Mapped[str] = mapped_column(index=True)
     name: Mapped[str]
     description: Mapped[str | None]
+    # If true, every call to this tool must be approved by a human before it
+    # runs (see AgentToolWorkbench in orchestrator).
+    mutating: Mapped[bool] = mapped_column(default=False)
     version: Mapped[int] = mapped_column(default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(

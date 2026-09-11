@@ -23,6 +23,10 @@ class AgentSpec:
     llm_config_name: str
     llm_config_temperature: float
     tool_names: list[str]
+    # Subset of tool_names whose tool is flagged `mutating` in the catalog --
+    # every call to one of these must be approved by a human before it runs
+    # (see AgentToolWorkbench).
+    mutating_tool_names: frozenset[str]
 
 
 async def list_agents_for_tenant(session: AsyncSession, tenant_id: str) -> list[AgentSpec]:
@@ -35,23 +39,27 @@ async def list_agents_for_tenant(session: AsyncSession, tenant_id: str) -> list[
     rows = list((await session.scalars(stmt)).all())
 
     tool_ids = {link.tool_id for row in rows for link in row.tool_links}
-    tool_names: dict[str, str] = {}
+    tools_by_id: dict[str, ToolRow] = {}
     if tool_ids:
         # tenant_id is redundant given the ids come from this tenant's own
         # agents, but scoping the query is cheap defense-in-depth.
         tools_stmt = select(ToolRow).where(
             ToolRow.tenant_id == tenant_id, ToolRow.id.in_(tool_ids)
         )
-        tool_names = {t.id: t.name for t in (await session.scalars(tools_stmt)).all()}
+        tools_by_id = {t.id: t for t in (await session.scalars(tools_stmt)).all()}
 
-    return [
-        AgentSpec(
-            id=row.id,
-            name=row.name,
-            instructions=row.instructions,
-            llm_config_name=row.llm_config_name,
-            llm_config_temperature=row.llm_config_temperature,
-            tool_names=[tool_names[link.tool_id] for link in row.tool_links if link.tool_id in tool_names],
+    specs = []
+    for row in rows:
+        tools = [tools_by_id[link.tool_id] for link in row.tool_links if link.tool_id in tools_by_id]
+        specs.append(
+            AgentSpec(
+                id=row.id,
+                name=row.name,
+                instructions=row.instructions,
+                llm_config_name=row.llm_config_name,
+                llm_config_temperature=row.llm_config_temperature,
+                tool_names=[t.name for t in tools],
+                mutating_tool_names=frozenset(t.name for t in tools if t.mutating),
+            )
         )
-        for row in rows
-    ]
+    return specs

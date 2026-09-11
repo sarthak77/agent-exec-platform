@@ -67,7 +67,7 @@ class OrchestratorServicer(service_pb2_grpc.OrchestratorServiceServicer):
     @_handle_errors
     async def Chat(self, request: service_pb2.ChatRequest, context: grpc.aio.ServicerContext):
         tenant_id = tenant_id_from_metadata(context)
-        result = await run_chat(tenant_id, request.messages)
+        result = await run_chat(tenant_id, request.messages, approved=request.approved)
         return service_pb2.ChatResponse(
             messages=[
                 service_pb2.Message(role=m.role, content=m.content, agent=m.agent)

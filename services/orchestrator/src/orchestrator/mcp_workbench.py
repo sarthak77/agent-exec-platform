@@ -87,9 +87,22 @@ class AgentToolWorkbench(Workbench):
     blocking the chat. start/stop/reset and state are no-ops.
     """
 
-    def __init__(self, tenant_id: str, allowed_tool_names: Sequence[str]) -> None:
+    def __init__(
+        self,
+        tenant_id: str,
+        allowed_tool_names: Sequence[str],
+        mutating_tool_names: Sequence[str] = (),
+        approved: bool = False,
+    ) -> None:
         self._tenant_id = tenant_id
         self._allowed = set(allowed_tool_names)
+        # Tools in this set are refused locally (never reaching mcp_svc, so a
+        # refused call has zero side effects) unless `approved` is set for
+        # this run. `approved` is a one-shot, per-job signal (see job_svc's
+        # runner.py) -- it is not a durable grant, so the *next* call to this
+        # job still gates unless it too is the approved resume.
+        self._mutating = set(mutating_tool_names)
+        self._approved = approved
         # Owned by this workbench (one per agent; see groupchat.py), not shared
         # mutable state threaded in from outside: a tool result signalling a
         # pending approval is recorded here, and the run (GroupChatSession)
@@ -144,6 +157,21 @@ class AgentToolWorkbench(Workbench):
                     )
                 ],
                 is_error=True,
+            )
+        if name in self._mutating and not self._approved:
+            # Refuse before ever calling mcp_svc, so an unapproved mutating
+            # call has zero side effects. Recorded exactly like a tool-side
+            # APPROVAL_REQUIRED marker so run.py's existing approval_sink /
+            # finish_reason override picks it up unchanged.
+            content = (
+                f"{APPROVAL_REQUIRED_MARKER}: tool {name!r} performs a mutating action "
+                "and requires human approval before it can run."
+            )
+            self.pending_approvals.append(content)
+            return ToolResult(
+                name=name,
+                result=[TextResultContent(content=content)],
+                is_error=False,
             )
         try:
             async with _mcp_session(self._tenant_id) as session:

@@ -48,6 +48,7 @@ def tool_to_proto(row: ToolRow) -> service_pb2.Tool:
     kwargs = dict(
         id=row.id,
         name=row.name,
+        mutating=row.mutating,
         metadata=service_pb2.ToolMetadata(
             version=row.version,
             created_at=dt_to_ts(row.created_at),
