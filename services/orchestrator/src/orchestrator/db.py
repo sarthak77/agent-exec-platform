@@ -7,14 +7,24 @@ startup.
 
 from __future__ import annotations
 
+from sqlalchemy import URL
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from orchestrator.config import settings
 
 
-def _dsn() -> str:
+def _dsn() -> URL:
     pg = settings.postgres
-    return f"postgresql+asyncpg://{pg.user}:{pg.password}@{pg.host}:{pg.port}/{pg.database}"
+    # URL.create percent-encodes each component, so passwords/users containing
+    # characters like '@', ':' or '/' don't corrupt the connection string.
+    return URL.create(
+        "postgresql+asyncpg",
+        username=pg.user,
+        password=pg.password,
+        host=pg.host,
+        port=pg.port,
+        database=pg.database,
+    )
 
 
 engine: AsyncEngine = create_async_engine(_dsn())

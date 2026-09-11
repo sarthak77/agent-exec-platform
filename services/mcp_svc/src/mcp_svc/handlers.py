@@ -22,27 +22,32 @@ Two handlers ship here today:
 * `http_request` — a built-in generic handler so the platform has a working
   end-to-end tool out of the box (agent -> gateway tool call -> mcp_svc
   executes -> result fed back) without every deployment having to add code
-  first.
+  first. Rejects requests to obviously-internal targets (cloud metadata IPs,
+  loopback, link-local, private ranges) before dispatching them.
 * `query_database` — read-only SQL access to this service's own Postgres
-  connection (the `customers`/`invoices` demo tables). Guarded to a single
-  SELECT statement over an allow-listed set of tables, so an agent can
-  explore that data without being able to mutate it, chain statements, or
+  connection (the `customers`/`invoices` demo tables). The query is parsed
+  (not regex-matched) to enforce a single plain SELECT over only the
+  allow-listed tables — so an agent can't mutate data, chain statements, or
   read unrelated tables (`tools`, `agents`, ...) that happen to live in the
-  same database.
+  same database — and is then run beneath a tenant-scoping CTE so it can
+  only ever see the caller's own tenant's rows.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
-import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
+import sqlglot
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlglot import exp
 
 from mcp_svc.config import settings
 from mcp_svc.db import Sessions
@@ -111,6 +116,49 @@ _HTTP_INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+_HTTP_ALLOWED_SCHEMES = {"http", "https"}
+# Hostnames that never resolve to a legitimate external target for this tool,
+# checked in addition to the IP-literal blocklist below.
+_HTTP_BLOCKED_HOSTNAMES = {"localhost", "metadata", "metadata.google.internal"}
+
+
+def _assert_url_is_public(url: str) -> None:
+    """Reject obviously-internal targets (cloud metadata endpoints, loopback,
+    link-local, and other private ranges) before we let the model make an
+    outbound request to an arbitrary, fully agent-controlled URL.
+
+    This is a static check on the literal host only (no DNS resolution), so
+    it can't stop DNS-rebinding (a public hostname that resolves to a private
+    IP at request time) — closing that fully would need a resolver-pinning
+    transport or network-level egress control. It does stop the common case
+    of an agent being tricked into hitting an IP-literal internal target
+    (e.g. `http://169.254.169.254/...`) or `localhost`.
+    """
+    parsed = urlsplit(url)
+    if parsed.scheme.lower() not in _HTTP_ALLOWED_SCHEMES:
+        raise ValueError(f"unsupported URL scheme: {parsed.scheme!r}")
+
+    host = parsed.hostname
+    if not host:
+        raise ValueError("URL must include a host")
+    if host.lower() in _HTTP_BLOCKED_HOSTNAMES or host.lower().endswith(".localhost"):
+        raise ValueError(f"requests to {host!r} are not allowed")
+
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return  # a non-literal hostname; nothing further to check statically
+    if (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    ):
+        raise ValueError(f"requests to {host!r} are not allowed")
+
+
 async def _run_http_request(arguments: dict[str, Any], ctx: ToolContext) -> str:
     """Perform an outbound HTTP request and return a JSON-encoded summary of
     the response (status, headers, body). Network/HTTP errors are returned as
@@ -120,6 +168,7 @@ async def _run_http_request(arguments: dict[str, Any], ctx: ToolContext) -> str:
     url = str(arguments.get("url", ""))
     if not method or not url:
         raise ValueError("`method` and `url` are required")
+    _assert_url_is_public(url)
 
     headers = arguments.get("headers") or {}
     params = arguments.get("query") or {}
@@ -177,37 +226,86 @@ _QUERY_DATABASE_SCHEMA: dict[str, Any] = {
 }
 
 _QUERY_ALLOWED_TABLES = {"customers", "invoices"}
-_QUERY_TABLE_REF_RE = re.compile(r"\b(?:from|join)\s+([a-zA-Z_][a-zA-Z0-9_]*)", re.IGNORECASE)
 _QUERY_MAX_ROWS = 100
+
+# Table names the caller's (validated) query is rewritten to use, each bound
+# to a tenant-filtered CTE prepended ahead of it — so no shape of SELECT the
+# caller writes (join, subquery, aggregate, ...) can see another tenant's
+# rows. Distinct names (rather than reusing `customers`/`invoices` and
+# relying on WITH-clause name shadowing) keep this portable: some engines
+# reject a non-recursive CTE whose body references a table of the same name.
+_SCOPED_TABLE_NAME = {"customers": "__tenant_customers", "invoices": "__tenant_invoices"}
+_TENANT_SCOPE_CTE = (
+    "WITH __tenant_customers AS (SELECT * FROM customers WHERE tenant_id = :tenant_id), "
+    "__tenant_invoices AS (SELECT * FROM invoices WHERE tenant_id = :tenant_id) "
+)
+
+
+def _validate_query_database_sql(query: str) -> exp.Select:
+    """Parse `query`, enforce that it's a single plain SELECT (no statement
+    chaining, no CTEs of its own, no schema-qualified table refs — e.g.
+    `public.customers` — which would bypass the allow-list below since it
+    names a table outside this connection's default search path resolution)
+    over only allow-listed tables, then rewrite its table references to the
+    tenant-scoped names in `_SCOPED_TABLE_NAME`. Raises ValueError with a
+    caller-facing message on any violation.
+    """
+    try:
+        statements = [s for s in sqlglot.parse(query, read="postgres") if s is not None]
+    except sqlglot.errors.SqlglotError as exc:
+        raise ValueError(f"could not parse SQL: {exc}") from exc
+
+    if len(statements) != 1:
+        raise ValueError("only a single SQL statement is allowed")
+    stmt = statements[0]
+
+    if not isinstance(stmt, exp.Select):
+        raise ValueError("only SELECT statements are allowed")
+    if list(stmt.find_all(exp.With)):
+        raise ValueError("queries may not define their own WITH/CTE clauses")
+
+    tables = list(stmt.find_all(exp.Table))
+    names: set[str] = set()
+    for table in tables:
+        if table.db:
+            raise ValueError("schema-qualified table references are not allowed")
+        names.add(table.name.lower())
+
+    if not names or not names <= _QUERY_ALLOWED_TABLES:
+        raise ValueError(
+            f"query may only reference: {', '.join(sorted(_QUERY_ALLOWED_TABLES))}"
+        )
+
+    for table in tables:
+        table.set("this", exp.to_identifier(_SCOPED_TABLE_NAME[table.name.lower()]))
+    return stmt
 
 
 async def _run_query_database(arguments: dict[str, Any], ctx: ToolContext) -> str:
-    """Run a single read-only SQL query and return the matching rows as JSON.
+    """Run a single read-only SQL query, scoped to the caller's tenant, and
+    return the matching rows as JSON.
 
-    Guardrails (not full tenant-row-level security — a demo-scale substitute
-    for it): only one statement, only SELECT, and only over the allow-listed
-    tables, so a hallucinating or adversarial agent can't mutate data, chain a
-    second statement onto the query, or read tables outside the ones this
-    tool is meant to expose. Results are capped so a broad query can't blow
-    up the model's context.
+    Guardrails: the query is parsed (not regex-matched) to enforce a single
+    plain SELECT over only the allow-listed tables, and is then run beneath a
+    tenant-scoping CTE (see `_TENANT_SCOPE_CTE`) so the caller's tenant can
+    never see another tenant's `customers`/`invoices` rows regardless of how
+    the SELECT is shaped. Results are capped so a broad query can't blow up
+    the model's context.
     """
     query = str(arguments.get("query", "")).strip()
     if not query:
         raise ValueError("`query` is required")
-    if ";" in query.rstrip(";"):
-        return json.dumps({"error": "only a single SQL statement is allowed"})
-    if not re.match(r"^\s*select\b", query, re.IGNORECASE):
-        return json.dumps({"error": "only SELECT statements are allowed"})
 
-    tables = {m.group(1).lower() for m in _QUERY_TABLE_REF_RE.finditer(query)}
-    if not tables or not tables <= _QUERY_ALLOWED_TABLES:
-        return json.dumps(
-            {"error": f"query may only reference: {', '.join(sorted(_QUERY_ALLOWED_TABLES))}"}
-        )
+    try:
+        stmt = _validate_query_database_sql(query)
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+    scoped_sql = _TENANT_SCOPE_CTE + stmt.sql(dialect="postgres")
 
     try:
         async with Sessions() as session:
-            result = await session.execute(text(query))
+            result = await session.execute(text(scoped_sql), {"tenant_id": ctx.tenant_id})
             rows = result.mappings().fetchmany(_QUERY_MAX_ROWS + 1)
     except SQLAlchemyError as exc:
         return json.dumps({"error": str(exc)})
