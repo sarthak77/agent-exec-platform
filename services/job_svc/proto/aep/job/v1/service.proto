@@ -96,6 +96,8 @@ message JobProgress {
   JobPhase phase = 1;          // where the runner is in the plan
   repeated string plan = 2;    // ordered sub-prompts the job was decomposed into
   repeated JobStep steps = 3;  // completed steps, in execution order
+  string error = 4;            // message from the most recent failed attempt, if any
+  string result = 5;           // final answer once phase is JOB_PHASE_COMPLETED
 }
 
 // The runner's progress through a job's plan.
@@ -111,6 +113,7 @@ message JobStep {
   string prompt = 2;            // the sub-prompt that was executed
   string output = 3;            // the orchestrator's answer for this step
   FinishReason finish_reason = 4;
+  string agent = 5;              // name of the group-chat agent that produced `output`
 }
 
 // Why the orchestrator ended a step's turn (mirrors the reasons it emits).

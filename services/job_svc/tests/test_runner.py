@@ -63,6 +63,10 @@ async def test_runs_all_steps_and_succeeds(service, orchestrator) -> None:
     # One planning call, then one execution call per sub-prompt, in order.
     assert orchestrator.plan_calls == 1
     assert orchestrator.exec_calls == ["a", "b", "c"]
+    # Which agent produced each step, and the final result, are checkpointed too.
+    assert all(step["agent"] == "tester" for step in done.progress["steps"].values())
+    assert done.progress["result"] == "done: c"
+    assert "error" not in done.progress
 
 
 async def test_plan_is_decomposition_of_the_job_prompt(service, orchestrator) -> None:
@@ -95,6 +99,8 @@ async def test_failure_mid_execution_checkpoints_completed_steps(service, orches
     assert set(retried.progress["steps"]) == {"0"}
     assert retried.progress["steps"]["0"]["output"] == "done: a"
     assert retried.progress["plan"] == ["a", "b", "c"]
+    # The failure reason is checkpointed into progress, not just logged.
+    assert "exec failed for 'b'" in retried.progress["error"]
 
 
 async def test_planning_failure_dead_letters_once_both_budgets_exhausted(
@@ -263,6 +269,8 @@ async def test_resume_after_failure_skips_completed_steps(service) -> None:
         "done: b",
         "done: c",
     ]
+    # The stale error from attempt 1 must not survive into the succeeded job.
+    assert "error" not in done.progress
 
 
 async def test_precheckpointed_plan_is_not_recomputed(service, orchestrator) -> None:

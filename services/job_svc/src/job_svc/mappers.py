@@ -72,6 +72,7 @@ def progress_to_proto(progress: dict | None) -> service_pb2.JobProgress:
             finish_reason=_FINISH_REASON_TO_PROTO.get(
                 step.get("finish_reason", ""), service_pb2.FINISH_REASON_UNSPECIFIED
             ),
+            agent=step.get("agent", ""),
         )
         for key, step in sorted(steps_by_index.items(), key=lambda kv: int(kv[0]))
     ]
@@ -79,6 +80,8 @@ def progress_to_proto(progress: dict | None) -> service_pb2.JobProgress:
         phase=_PHASE_TO_PROTO.get(progress.get("phase", ""), service_pb2.JOB_PHASE_UNSPECIFIED),
         plan=list(progress.get("plan") or []),
         steps=steps,
+        error=progress.get("error", ""),
+        result=progress.get("result", ""),
     )
 
 

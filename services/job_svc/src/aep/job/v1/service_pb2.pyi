@@ -149,26 +149,32 @@ class Job(_message.Message):
     def __init__(self, id: _Optional[str] = ..., type: _Optional[_Union[JobType, str]] = ..., spec: _Optional[_Union[JobSpec, _Mapping]] = ..., status: _Optional[_Union[JobStatus, str]] = ..., attempts: _Optional[int] = ..., max_attempts: _Optional[int] = ..., metadata: _Optional[_Union[JobMetadata, _Mapping]] = ..., progress: _Optional[_Union[JobProgress, _Mapping]] = ..., retry_count: _Optional[int] = ..., max_retries: _Optional[int] = ...) -> None: ...
 
 class JobProgress(_message.Message):
-    __slots__ = ("phase", "plan", "steps")
+    __slots__ = ("phase", "plan", "steps", "error", "result")
     PHASE_FIELD_NUMBER: _ClassVar[int]
     PLAN_FIELD_NUMBER: _ClassVar[int]
     STEPS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    RESULT_FIELD_NUMBER: _ClassVar[int]
     phase: JobPhase
     plan: _containers.RepeatedScalarFieldContainer[str]
     steps: _containers.RepeatedCompositeFieldContainer[JobStep]
-    def __init__(self, phase: _Optional[_Union[JobPhase, str]] = ..., plan: _Optional[_Iterable[str]] = ..., steps: _Optional[_Iterable[_Union[JobStep, _Mapping]]] = ...) -> None: ...
+    error: str
+    result: str
+    def __init__(self, phase: _Optional[_Union[JobPhase, str]] = ..., plan: _Optional[_Iterable[str]] = ..., steps: _Optional[_Iterable[_Union[JobStep, _Mapping]]] = ..., error: _Optional[str] = ..., result: _Optional[str] = ...) -> None: ...
 
 class JobStep(_message.Message):
-    __slots__ = ("index", "prompt", "output", "finish_reason")
+    __slots__ = ("index", "prompt", "output", "finish_reason", "agent")
     INDEX_FIELD_NUMBER: _ClassVar[int]
     PROMPT_FIELD_NUMBER: _ClassVar[int]
     OUTPUT_FIELD_NUMBER: _ClassVar[int]
     FINISH_REASON_FIELD_NUMBER: _ClassVar[int]
+    AGENT_FIELD_NUMBER: _ClassVar[int]
     index: int
     prompt: str
     output: str
     finish_reason: FinishReason
-    def __init__(self, index: _Optional[int] = ..., prompt: _Optional[str] = ..., output: _Optional[str] = ..., finish_reason: _Optional[_Union[FinishReason, str]] = ...) -> None: ...
+    agent: str
+    def __init__(self, index: _Optional[int] = ..., prompt: _Optional[str] = ..., output: _Optional[str] = ..., finish_reason: _Optional[_Union[FinishReason, str]] = ..., agent: _Optional[str] = ...) -> None: ...
 
 class JobSpec(_message.Message):
     __slots__ = ("agent_execution_spec",)

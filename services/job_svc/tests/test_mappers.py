@@ -85,8 +85,8 @@ def test_progress_to_proto_orders_steps_by_index() -> None:
         "plan": ["a", "b", "c"],
         # deliberately out of order and sparse to prove index-based ordering
         "steps": {
-            "1": {"prompt": "b", "output": "ob", "finish_reason": "stop"},
-            "0": {"prompt": "a", "output": "oa", "finish_reason": "stop"},
+            "1": {"prompt": "b", "output": "ob", "finish_reason": "stop", "agent": "bot-2"},
+            "0": {"prompt": "a", "output": "oa", "finish_reason": "stop", "agent": "bot-1"},
         },
     }
     proto = progress_to_proto(progress)
@@ -97,6 +97,20 @@ def test_progress_to_proto_orders_steps_by_index() -> None:
         (1, "b", "ob"),
     ]
     assert all(s.finish_reason == service_pb2.FINISH_REASON_STOP for s in proto.steps)
+    assert [s.agent for s in proto.steps] == ["bot-1", "bot-2"]
+
+
+def test_progress_to_proto_carries_error_and_result() -> None:
+    progress = {"phase": "completed", "error": "orchestrator: exec failed", "result": "the answer"}
+    proto = progress_to_proto(progress)
+    assert proto.error == "orchestrator: exec failed"
+    assert proto.result == "the answer"
+
+
+def test_progress_to_proto_defaults_error_and_result_to_empty() -> None:
+    proto = progress_to_proto({"phase": "executing"})
+    assert proto.error == ""
+    assert proto.result == ""
 
 
 def test_progress_to_proto_maps_finish_reasons() -> None:

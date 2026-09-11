@@ -17,10 +17,16 @@ job that previously failed part-way resumes rather than restarting:
   - The plan is computed once and checkpointed. A resumed run reuses the stored
     plan and never re-decomposes -- otherwise the LLM could return a *different*
     breakdown and the already-completed steps would no longer align.
-  - Each step's output is checkpointed the moment it succeeds. A resumed run
-    skips any step already present in `progress["steps"]`, so a completed step
-    is never executed twice. This is the "execute from the last successful step"
-    guarantee: a step runs at most once across all attempts.
+  - Each step's output is checkpointed the moment it succeeds, along with which
+    group-chat agent produced it. A resumed run skips any step already present
+    in `progress["steps"]`, so a completed step is never executed twice. This is
+    the "execute from the last successful step" guarantee: a step runs at most
+    once across all attempts.
+  - On failure, the exception's message is checkpointed into `progress["error"]`
+    so a caller inspecting a `failed`/`dead` job can see why without
+    correlating log lines. It is cleared once a later attempt succeeds.
+  - On success, `progress["result"]` is set to the last step's output -- the
+    job's final answer -- so a caller need not infer it from `steps`.
 
 On any failure the runner reports `failed` and lets job_svc's two-tier retry
 budget (see services/jobs.py) decide the real outcome:
@@ -137,14 +143,23 @@ class JobRunner:
                 logger.exception("job %s: lease renewal failed", job_id)
 
     async def _execute(self, row: JobRow) -> None:
-        prompt = self._prompt_of(row)
         # Copy so we never mutate the ORM row's attribute in place; the column is
         # rewritten wholesale by save_progress.
         progress: dict = dict(row.progress or {})
-
-        plan = await self._ensure_plan(row, prompt, progress)
-        await self._execute_steps(row, plan, progress)
-        await self._finalize(row, progress)
+        try:
+            prompt = self._prompt_of(row)
+            plan = await self._ensure_plan(row, prompt, progress)
+            await self._execute_steps(row, plan, progress)
+            await self._finalize(row, progress)
+        except ApprovalRequired:
+            raise
+        except Exception as exc:
+            # Checkpoint the failure reason so it survives into `JobProgress`,
+            # not just the logs -- a caller inspecting a `failed`/`dead` job
+            # can see *why* without correlating log lines.
+            progress["error"] = str(exc)
+            await self._jobs.save_progress(job_id=row.id, progress=progress)
+            raise
 
     async def _ensure_plan(self, row: JobRow, prompt: str, progress: dict) -> list[str]:
         existing = progress.get("plan")
@@ -200,6 +215,7 @@ class JobRunner:
                 "prompt": sub_prompt,
                 "output": reply.content,
                 "finish_reason": reply.finish_reason,
+                "agent": reply.agent,
             }
             # Checkpoint immediately: a crash after this point must not re-run the
             # step on the next attempt.
@@ -207,6 +223,11 @@ class JobRunner:
 
     async def _finalize(self, row: JobRow, progress: dict) -> None:
         progress["phase"] = "completed"
+        progress.pop("error", None)  # clear any stale failure from an earlier attempt
+        steps: dict = progress.get("steps") or {}
+        if steps:
+            last_index = max(int(key) for key in steps)
+            progress["result"] = steps[str(last_index)].get("output", "")
         await self._jobs.save_progress(job_id=row.id, progress=progress)
         await self._jobs.update(tenant_id=row.tenant_id, job_id=row.id, status="succeeded")
 

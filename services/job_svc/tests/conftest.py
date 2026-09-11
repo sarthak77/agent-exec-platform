@@ -109,7 +109,7 @@ class FakeOrchestrator(OrchestratorGateway):
                 content="APPROVAL_REQUIRED: awaiting human approval",
                 finish_reason="requires_approval",
             )
-        return ChatReply(content=f"done: {user}", finish_reason="stop")
+        return ChatReply(content=f"done: {user}", finish_reason="stop", agent="tester")
 
     @property
     def plan_calls(self) -> int:

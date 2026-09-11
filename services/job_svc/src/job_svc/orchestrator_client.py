@@ -38,10 +38,12 @@ class ChatTurn:
 @dataclass(frozen=True, slots=True)
 class ChatReply:
     """The slice of a ChatResponse the runner cares about: the final assistant
-    message (the group chat's answer for this turn) and why it stopped."""
+    message (the group chat's answer for this turn), which of the tenant's
+    group-chat agents produced it, and why it stopped."""
 
     content: str
     finish_reason: str
+    agent: str = ""
 
 
 @runtime_checkable
@@ -56,13 +58,13 @@ def _md(tenant_id: str) -> list[tuple[str, str]]:
     return [("x-tenant-id", tenant_id)]
 
 
-def _final_content(response: service_pb2.ChatResponse) -> str:
+def _final_message(response: service_pb2.ChatResponse) -> service_pb2.Message:
     # The transcript is the messages produced by the group chat this turn; the
     # last non-empty one is the consolidated answer. Empty transcript -> "".
     for message in reversed(response.messages):
         if message.content:
-            return message.content
-    return ""
+            return message
+    return service_pb2.Message()
 
 
 class OrchestratorClient(OrchestratorGateway):
@@ -94,5 +96,8 @@ class OrchestratorClient(OrchestratorGateway):
             response = await self._get_stub().Chat(request, metadata=_md(tenant_id))
         except grpc.aio.AioRpcError as exc:
             raise DependencyError(f"orchestrator: {exc.code().name}: {exc.details()}") from exc
-        return ChatReply(content=_final_content(response), finish_reason=response.finish_reason)
+        final = _final_message(response)
+        return ChatReply(
+            content=final.content, finish_reason=response.finish_reason, agent=final.agent
+        )
 
