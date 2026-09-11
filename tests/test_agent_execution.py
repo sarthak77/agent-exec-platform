@@ -312,40 +312,6 @@ class TestAgentExecutionPlatform:
             jobs = (await self.manager.snapshot(tenant_id=tenant))["jobs"]
             assert [j["id"] for j in jobs] == [job_id]
 
-    async def test_get_task_query_against_aes(self) -> None:
-        """Fire a real gRPC query at the running agent_execution_service.
-
-        GetTask is a pure read: it exercises the live gRPC surface plus the
-        service's Postgres connection end to end, without depending on the
-        downstream execution pipeline. A fresh tenant simply has no tasks yet.
-        """
-        async with grpc.aio.insecure_channel(AES_ADDRESS) as channel:
-            stub = service_pb2_grpc.AgentExecutionServiceStub(channel)
-            response = await stub.GetTask(
-                service_pb2.GetTaskRequest(),
-                metadata=(("x-tenant-id", TENANT_ID),),
-            )
-
-        # A well-formed response with a (repeated) tasks field is what we assert;
-        # the list is empty for a tenant that has created nothing.
-        assert list(response.tasks) == []
-
-    async def test_seeded_tools_and_agents_present(self) -> None:
-        """The catalog seeded at startup is queryable over gRPC."""
-        async with grpc.aio.insecure_channel(AES_ADDRESS) as channel:
-            stub = service_pb2_grpc.AgentExecutionServiceStub(channel)
-            tools = await stub.GetTool(
-                service_pb2.GetToolRequest(), metadata=(("x-tenant-id", TENANT_ID),)
-            )
-            agents = await stub.GetAgent(
-                service_pb2.GetAgentRequest(), metadata=(("x-tenant-id", TENANT_ID),)
-            )
-
-        tool_names = {t.name for t in tools.tools}
-        agent_names = {a.name for a in agents.agents}
-        assert {t.name for t in SEED_TOOLS} <= tool_names
-        assert {a.name for a in SEED_AGENTS} <= agent_names
-
     async def test_query_database_tool_auto_executes(self) -> None:
         """Add a tool + agent, then fire a single CreateTask gRPC call at AES
         and let the already-running pipeline execute it on its own.

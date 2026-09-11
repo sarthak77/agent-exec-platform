@@ -465,6 +465,7 @@ structured so these are additive rather than redesigns; natural next steps:
   independent tool calls within a step could run concurrently.
 - **LLM provider fallback** — `gateway` is single-provider; add routing and a
   fallback provider on outage (the `Provider` seam is where it belongs).
+- **Multi model support** — Currently we support only 1 model but can add support for multi models in a single provider.
 
 **Cost, limits, and safety**
 
