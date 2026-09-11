@@ -43,7 +43,7 @@ _IN_FLIGHT_JOB_STATUSES = ("queued", "running")
 class TestAgentExecutionPlatform:
     # Model API key for the LLM gateway. Override in place, or via env var.
     MODEL_API_KEY: ClassVar[str] = (
-        os.environ.get("MODEL_API_KEY") or os.environ.get("GROQ_API_KEY") or "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"
+        os.environ.get("MODEL_API_KEY") or os.environ.get("GROQ_API_KEY") or "test" #expired key
     )
 
     manager: ClassVar[ServiceManager]
