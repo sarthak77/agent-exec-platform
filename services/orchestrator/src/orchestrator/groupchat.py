@@ -62,6 +62,21 @@ _PLANNER_DESCRIPTION = (
     "to produce the plan, never to carry out a concrete sub-task."
 )
 
+# A passive participant used ONLY to pad a single-agent tenant's execution turn
+# to the two participants SelectorGroupChat requires (its constructor rejects
+# fewer -- see build_group_chat). It has no tools and is never selected
+# (_make_solo_selector routes every turn to the real agent), so it exists purely
+# to satisfy the participant-count rule and never actually speaks.
+_PLACEHOLDER_NAME = "Placeholder"
+_PLACEHOLDER_SYSTEM_MESSAGE = (
+    "You are an inactive placeholder and will never be asked to respond. If you "
+    "somehow are, reply with a single space and nothing else."
+)
+_PLACEHOLDER_DESCRIPTION = (
+    "Inactive placeholder with no tools; exists only to pad a single-agent team "
+    "to the group chat's required minimum. Never select it."
+)
+
 
 def _make_plan_selector(planner_slug: str):
     """Speaker-selection override for the SelectorGroupChat.
@@ -79,6 +94,21 @@ def _make_plan_selector(planner_slug: str):
             return None
         planner_spoke = any(getattr(m, "source", None) == planner_slug for m in thread)
         return None if planner_spoke else planner_slug
+
+    return _select
+
+
+def _make_solo_selector(agent_slug: str):
+    """Route every execution-turn selection to the tenant's only real agent.
+
+    A single-agent tenant's execution turn is padded with a passive placeholder
+    to meet SelectorGroupChat's two-participant minimum (see build_group_chat);
+    forcing the real agent here keeps that placeholder from ever being picked --
+    and skips the selector's own model call, since there is only one real choice.
+    """
+
+    def _select(thread) -> str | None:
+        return agent_slug
 
     return _select
 
@@ -221,8 +251,26 @@ async def build_group_chat(
             [planner_slug]
         )
     else:
-        # Execution call: stop as soon as a domain agent actually answers instead
-        # of padding out to the message cap. See _execution_termination.
+        # Execution call. SelectorGroupChat needs >=2 participants (its
+        # constructor rejects fewer), so a single-agent tenant would fail to
+        # execute. Pad it with a passive placeholder and force every turn to the
+        # real agent, so the placeholder only makes up the count, never speaks.
+        if len(participants) < 2:
+            placeholder_slug = _slugify(_PLACEHOLDER_NAME, taken)
+            name_by_slug[placeholder_slug] = _PLACEHOLDER_NAME
+            placeholder_client = GatewayChatCompletionClient(temperature=0.0, stub=stub)
+            clients.append(placeholder_client)
+            participants.append(
+                AssistantAgent(
+                    placeholder_slug,
+                    model_client=placeholder_client,
+                    system_message=_PLACEHOLDER_SYSTEM_MESSAGE,
+                    description=_PLACEHOLDER_DESCRIPTION,
+                )
+            )
+            selector_func = _make_solo_selector(agent_slugs[0])
+        # Stop as soon as a domain agent actually answers instead of padding out
+        # to the message cap. See _execution_termination.
         termination = _execution_termination(agent_slugs)
 
     # SelectorGroupChat runs an LLM to pick the next speaker each turn; give it

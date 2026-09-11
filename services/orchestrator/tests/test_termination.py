@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from autogen_agentchat.messages import TextMessage
 
-from orchestrator.groupchat import _execution_termination
+from orchestrator.groupchat import _execution_termination, _make_solo_selector
 
 
 async def test_does_not_terminate_on_user_input() -> None:
@@ -35,3 +35,12 @@ async def test_terminates_on_any_listed_agent() -> None:
     term = _execution_termination(["data_analyst", "email_assistant"])
     stop = await term([TextMessage(content="sent", source="email_assistant")])
     assert stop is not None
+
+
+def test_solo_selector_always_routes_to_the_only_agent() -> None:
+    # The placeholder that pads a single-agent execute turn to SelectorGroupChat's
+    # two-participant minimum must never be picked: the solo selector routes every
+    # turn to the one real agent regardless of the thread so far.
+    select = _make_solo_selector("data_analyst")
+    assert select([]) == "data_analyst"
+    assert select([TextMessage(content="hi", source="user")]) == "data_analyst"
