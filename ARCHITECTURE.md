@@ -1,21 +1,18 @@
 # Architecture
 
-This document explains how the AI Agent Execution Platform is put together: the
-services, their data models, the mechanisms that make execution reliable and
-resumable, and the trade-offs behind each decision. It corresponds to
-deliverable #3 in `Sarthak_Assignment.pdf` ("Architecture/design documentation
-explaining the major components and decisions"); see the mapping table at the
-end for how each assignment requirement is addressed.
+This document explains how the AI Agent Execution Platform is put together:
+- the services
+- their data models
+- the mechanisms that make execution reliable and resumable
+- the trade-offs behind each decision
 
 ## 1. System overview
 
 Five services, each independently deployable, backed by a single shared
-Postgres instance (they are separated by database/table ownership *within*
-that one instance, not by a database server per service — see §9). Services
-talk to each other over gRPC, except tool execution, which uses MCP over
+Postgres instance. Services talk to each other over gRPC, except tool execution, which uses MCP over
 streamable HTTP:
 
-```
+```text
   external caller
        │  gRPC: CreateTask / GetTask / ApproveTask / RetryTask
        ▼
@@ -31,28 +28,17 @@ streamable HTTP:
 └──────────┬──────────────┘
            │  gRPC: Chat  (1x decompose, then 1x per plan step)
            ▼
-┌─────────────────────────┐      MCP over streamable HTTP       ┌───────────────┐
-│ orchestrator            │ ──── (tools/list, tools/call) ────▶ │ mcp_svc       │
-│ (AutoGen group chat)    │                                     │ (catalog +    │
-└──────────┬──────────────┘                                     │  execution)   │
-           │  gRPC: Chat (per-agent LLM calls)                  └───────┬───────┘
-           ▼                                                            │ outbound
-┌─────────────────────────┐   HTTP (OpenAI-compatible)  ┌───────────┐  │ HTTP / SQL
-│ gateway                 │ ──────────────────────────▶ │ LLM       │  ▼
-│ (guardrails + egress)   │        (Groq endpoint)       │ provider  │ customers/invoices,
-└─────────────────────────┘                             └───────────┘ external APIs
-
-  Shared Postgres instance (localhost:5432):
-    - db `agent_execution_service` — AES-owned agents/tools/tasks (+ demo
-      customers/invoices); read directly by orchestrator and mcp_svc
-    - db `job_svc` — jobs table, owned by job_svc
-    - gateway is stateless (no database)
+┌─────────────────────────┐   MCP over streamable HTTP    ┌──────────────────┐
+│ orchestrator            │ ─(tools/list, tools/call)───▶ │ mcp_svc          │
+│ (AutoGen group chat)    │                               │ (catalog + exec) │              
+└──────────┬──────────────┘                               └──────────────────┘
+           │  gRPC: Chat (per-agent LLM calls)
+           ▼
+┌─────────────────────────┐   HTTP (OpenAI-compatible)    ┌──────────────────┐
+│ gateway                 │ ──────(Groq endpoint)───────▶ │ LLM provider     │
+│ (guardrails + egress)   │                               │ (Groq)           │
+└─────────────────────────┘                               └──────────────────┘
 ```
-
-Each arrow that crosses a service boundary is either a generated gRPC stub
-call or (orchestrator → mcp_svc) an MCP client session — never a shared
-in-process call, so every hop is independently deployable, retryable, and
-timeout-able.
 
 **Request flow for "submit a task":**
 
@@ -245,29 +231,6 @@ the consolidated transcript.
   package between the two services, so this is a hand-maintained invariant,
   called out explicitly in both files' docstrings).
 
-#### 3.3.1 Why AutoGen's own MCP workbench isn't used
-
-`autogen_ext`'s `McpWorkbench` imports `mcp.shared.context.RequestContext`,
-which only exists in the `mcp` 1.x client. This project pins `mcp>=2,<3` (the
-streamable-HTTP transport used by mcp_svc's server is the 2.x shape), so
-`McpWorkbench` is import-incompatible. `AgentToolWorkbench` is a small,
-from-scratch `Workbench` built directly on the 2.x `ClientSession` +
-`streamable_http_client`, opening a short-lived, per-call MCP session (it's
-deliberately stateless — a listing/call failure yields an empty tool set or an
-error result rather than blocking the whole chat).
-
-#### 3.3.2 Tool permissioning happens twice, on purpose
-
-`AgentToolWorkbench` is constructed per-agent with that agent's specific
-`allowed_tool_names` (from `AgentSpec.tool_names` in `agents_repo.py`).
-`list_tools()` filters mcp_svc's catalog down to just that set, and
-`call_tool()` refuses (locally, before ever reaching mcp_svc) any name outside
-it. This is redundant with the per-agent instruction text also constraining
-which tools an agent is told about — deliberately: the instruction text is a
-suggestion to the LLM, not an enforcement boundary, so the workbench-level
-allow-list is what actually prevents Agent A from invoking a tool only Agent B
-was granted, even if the LLM hallucinates the call.
-
 ### 3.4 job_svc — the queue, runner, and poller
 
 **Responsibility:** own job state, execute jobs by driving the orchestrator
@@ -285,38 +248,31 @@ retry/dead-letter budget.
   locked_at, locked_by, created_at, updated_at`.
 - **Job state machine.** Six terminal-ish states plus one pause state:
 
-  ```
-                    ┌─────────┐  claim (attempt++, lease stamped)
-     CreateJob ───▶ │ queued  │ ───────────────────────────────▶ ┌─────────┐
-                    └────▲────┘                                  │ running │
-        RetryJob(reset)  │        UpdateJob(queued)               └──┬───┬──┘
-        attempts=0       │        (non-resetting requeue,             │   │
-        retry_count++    │         from failed/dead/cancelled/         │   │
-                    ┌─────┴───┐    waiting_approval)                   │   │
-                    │ failed  │ ◀───────────────────────────────────────┘   │
-                    └────┬────┘  fail: attempts<max_attempts → queued        │
-                         │        else retry_count<max_retries → failed      │
-                         │        else → dead                                │
-                    ┌────▼────┐                                             │
-                    │  dead   │ (terminal)                                   │
-                    └─────────┘                                             │
-                                                                              │
-                    ┌───────────────────┐   pause on approval gate           │
-                    │ waiting_approval  │ ◀──────────────────────────────────┘
-                    └─────────┬─────────┘
-                              │ UpdateJob(queued) via ApproveTask
-                              ▼
-                           queued (resumes from checkpoint)
-
-     running ──▶ succeeded (terminal, via _finalize)
-     {queued, running, waiting_approval} ──▶ cancelled (terminal, manual)
+  ```text
+  happy path:   CreateJob ─▶ queued ─▶ running ─▶ succeeded   (succeeded is terminal)
+  on failure:                          running ─▶ failed ─▶ (auto-retry) queued ... ─▶ dead
+  on approval:                         running ─▶ waiting_approval ─▶ (ApproveTask) queued
   ```
 
-  Implemented as a single table of allowed source statuses per target
-  (`_ALLOWED_ENTRY` in `services/jobs.py`), with `running` handled by `_start`
-  (also consumes an attempt and stamps a lease) and `failed` handled by
-  `_fail` (defers to `_next_status_after_failure`, a SQL `CASE` expression
-  shared with the reaper — see below).
+  | From → To | Trigger | Notes |
+  |---|---|---|
+  | *(none)* → `queued` | `CreateJob` | initial state |
+  | `queued` → `running` | poller `claim_batch` | `attempt++`, lease stamped |
+  | `running` → `succeeded` | job finished | **terminal**, via `_finalize` |
+  | `running` → `failed` | error raised | see failure escalation below |
+  | `running` → `waiting_approval` | mutating tool hits approval gate | pauses; no extra budget consumed |
+  | `failed` → `queued` | automatic | if `attempts < max_attempts` |
+  | `failed` → `failed` | automatic | if attempts exhausted but `retry_count < max_retries` |
+  | `failed` → `dead` | automatic | **terminal**, both budgets exhausted |
+  | `failed` → `queued` | `RetryJob` (manual) | resets `attempts=0`, `retry_count++` |
+  | `waiting_approval` → `queued` | `ApproveTask` → `UpdateJob(queued)` | resumes from checkpoint |
+  | `{failed, dead, cancelled, waiting_approval}` → `queued` | `UpdateJob(queued)` | non-resetting requeue |
+  | `{queued, running, waiting_approval}` → `cancelled` | manual | **terminal** |
+
+  Failure escalation (`_next_status_after_failure`, shared with the reaper):
+  `attempts < max_attempts` → `queued`; else `retry_count < max_retries` →
+  `failed`; else → `dead`.
+
 - **Two-tier retry budget, why two counters:** `attempts`/`max_attempts` is
   consumed automatically at claim time with **no caller involved** — while
   budget remains, a failed run is silently requeued (a transient error like a
@@ -365,8 +321,17 @@ retry/dead-letter budget.
 #### 3.4.1 Execution checkpointing (`runner.py`)
 
 Every job's `progress` JSON column is the resume state:
-`{phase, plan, steps: {index: {prompt, output, finish_reason, agent}},
-result, error, pending_approval}`.
+
+```text
+{
+  phase,
+  plan,
+  steps: { index: { prompt, output, finish_reason, agent } },
+  result,
+  error,
+  pending_approval
+}
+```
 
 - **Plan once, never re-decompose on resume.** The first attempt asks the
   orchestrator to break the job's prompt into an ordered list of
@@ -409,77 +374,56 @@ result, error, pending_approval}`.
 
 ### 3.5 mcp_svc — tool catalog and execution
 
-**Responsibility:** serve a tenant's tool catalog over MCP, and execute the
-tools that have a registered code binding.
+**Responsibility:** serve each tenant's tool catalog over MCP, and run the
+tools that have code behind them.
 
-- **Transport:** MCP 2.x streamable-HTTP server (`server.py`), listening on
-  `:8003` (`config.toml`). `[security].allowed_hosts`/`allowed_origins` are
-  present (empty by default, since the service is assumed to sit behind a
-  trusted edge in this deployment) as the DNS-rebinding/Origin-check knobs the
-  transport supports, for a deployment that puts mcp_svc directly on an
-  untrusted network path.
-- **Catalog vs. execution — two separate concerns on purpose.** The `tools`
-  table (owned by AES, mirrored read-only into mcp_svc's `models.ToolRow`) is
-  just a per-tenant catalog: name, description, the `mutating` flag. It
-  carries no code. Execution bindings live in `handlers.py` as a small
-  in-process registry (`get_handler(name) -> Handler | None`), mirroring the
-  pattern where each tool's implementation and its input schema live in a
-  code module, not a database row. `server.py`'s `_on_call_tool` gates on
-  catalog ownership *first* (does this tenant have a row with this name?),
-  then dispatches to `get_handler`; a catalog entry with no registered
-  handler returns a normal (non-crashing) "no execution binding configured"
-  result rather than erroring the whole call. **Two handlers are implemented
-  today: `http_request` and `query_database`.** The seeded demo catalog also
-  advertises `web_search`, `calculator`, and `send_email` as catalog-only
-  entries with no execution binding — they exist to exercise per-agent tool
-  *permissioning* and the `mutating` approval gate end-to-end without
-  requiring a real external email/search integration. Wiring a live
-  `send_email` handler would need nothing more than a new `Handler` entry in
-  `handlers.py`; the approval-pause mechanism it would exercise (§4.3) is
-  already fully generic and doesn't need to change to support it.
-- **`http_request` — SSRF-guarded generic HTTP tool.** Before dispatching any
-  agent-controlled URL, `_assert_url_is_public()` rejects non-`http(s)`
-  schemes, a small blocked-hostname set (`localhost`, `metadata`,
-  `metadata.google.internal`, `*.localhost`), and IP-literal targets that are
-  private/loopback/link-local/reserved/multicast/unspecified. This is a
-  static check on the literal host only — no DNS resolution — so it stops the
-  common case (an agent tricked into requesting
-  `http://169.254.169.254/...` or `http://localhost/...`) but **not**
-  DNS-rebinding (a public hostname resolving to a private IP at request
-  time); closing that fully needs a resolver-pinning transport or
-  network-level egress control, called out explicitly as a known gap rather
-  than silently ignored. Network/HTTP errors are caught and returned as a
-  structured `{"error": ...}` payload rather than raised, so the model
-  gets a usable result to reason about (e.g. retry, tell the user) instead of
-  an opaque tool-call failure.
-- **`query_database` — SQL-parsed tenant isolation, not regex.** The tool
-  accepts a single SQL string and must guarantee it can only read the
-  caller's tenant's rows from an allow-listed pair of demo tables
-  (`customers`, `invoices`). The query is parsed with `sqlglot`
-  (`_validate_query_database_sql`) and rejected if it isn't a single
-  statement, isn't a plain `SELECT`, defines its own CTE (a `WITH customers
-  AS (...)` could otherwise shadow the allow-list check), references a
-  schema-qualified table (`public.customers` — would bypass a
-  name-only allow-list), or references any table outside
-  `{customers, invoices}`. Every allowed table reference is then rewritten in
-  the parsed AST to a distinct scoped name (`customers → __tenant_customers`,
-  not just reusing `customers` — some engines reject a CTE shadowing a table
-  it also selects from), and the whole thing is run beneath a prepended
-  tenant-filtering CTE bound to the caller's `tenant_id` as a query
-  parameter. The result: no shape of SELECT the caller can write (join,
-  subquery, aggregate) can see another tenant's rows, because the tenant
-  filter is structural (in the query the database executes), not something
-  the tool's Python code has to remember to apply on the result set. Results
-  are capped at 100 rows to bound how much can land in the model's context.
-- **`APPROVAL_REQUIRED` sentinel.** A handler that needs to pause for
-  approval (none currently do, since neither shipped handler is `mutating`)
-  would return a result string containing the literal marker
-  `"APPROVAL_REQUIRED"`; `orchestrator/mcp_workbench.py` watches for that
-  exact string (`APPROVAL_REQUIRED_MARKER`) in a tool result to detect the
-  pause. In practice, the approval gate is enforced one layer up, in the
-  workbench itself (§4.3) — the mcp_svc-side marker exists so a handler could
-  *also* refuse conditionally on its own logic (e.g. only large amounts need
-  approval) rather than every call to a `mutating` tool always pausing.
+- **Transport.** An MCP 2.x streamable-HTTP server (`server.py`) on port
+  `8003`. The `[security].allowed_hosts`/`allowed_origins` knobs exist for
+  deployments that expose mcp_svc on an untrusted network — empty by default
+  here, since it's assumed to sit behind a trusted edge.
+- **Catalog and execution are kept separate.**
+  - The `tools` table (owned by AES, read-only here as `models.ToolRow`) is
+    just a catalog — `name`, `description`, `mutating` — and holds no code.
+  - Tool implementations live in `handlers.py`, looked up by name
+    (`get_handler(name) -> Handler | None`).
+  - On a call, `_on_call_tool` checks catalog ownership first (does this
+    tenant have this tool?), then runs the handler. A catalogued tool with no
+    handler returns a plain "no execution binding" result instead of erroring.
+  - **Implemented today: `http_request` and `query_database`.** The demo
+    catalog also lists `web_search`, `calculator`, and `send_email` with no
+    handler — they exist only to demonstrate per-agent permissioning and the
+    `mutating` approval gate. Adding a real `send_email` is just a new handler
+    entry; the approval flow (§4.3) already works generically.
+- **`http_request` — generic HTTP tool with an SSRF guard.**
+  - Before any request, `_assert_url_is_public()` rejects non-`http(s)` URLs,
+    known-bad hosts (`localhost`, cloud-metadata names, ...), and
+    private/loopback/link-local/reserved IP literals.
+  - It only inspects the literal host (no DNS lookup), so it blocks the common
+    cases (`http://169.254.169.254`, `http://localhost`) but **not**
+    DNS-rebinding — a known gap that needs resolver pinning or network-level
+    egress control to fully close.
+  - Network/HTTP errors come back as `{"error": ...}` so the model can react,
+    rather than raised as an opaque failure.
+- **`query_database` — read-only, tenant-isolated SQL.**
+  - Takes one SQL string and must only ever read the caller's own rows from
+    `customers`/`invoices`.
+  - It's parsed with `sqlglot` (`_validate_query_database_sql`) and rejected
+    unless it's a single plain `SELECT`. It also rejects self-defined CTEs,
+    schema-qualified tables (`public.customers`), and any table outside
+    `{customers, invoices}` — each of which could sidestep a name-only
+    allow-list.
+  - The tenant filter is then injected *structurally*: the allowed tables are
+    wrapped in a tenant-scoping CTE bound to the caller's `tenant_id`. So no
+    SELECT shape (join, subquery, aggregate) can see another tenant's data —
+    the isolation lives in the SQL the database runs, not in Python
+    post-filtering.
+  - Results are capped at 100 rows to bound what lands in the model's context.
+- **`APPROVAL_REQUIRED` sentinel.** A handler can return a result containing
+  the marker `"APPROVAL_REQUIRED"`, which the orchestrator workbench watches
+  for (`APPROVAL_REQUIRED_MARKER`). In practice the approval gate is enforced
+  one layer up, in the workbench (§4.3), and no shipped handler uses this
+  today. The marker just lets a handler pause on its own logic (e.g. only
+  large amounts) instead of every `mutating` call always pausing.
 
 ## 4. Cross-cutting mechanisms
 
@@ -668,7 +612,10 @@ before any other observes it — safe without an explicit lock).
   rate-limiting layer would build on — not implemented as a bonus feature
   here, but the field exists precisely so it can be.
 
-## 5. Reliability checklist (assignment §"Reliability")
+## 5. Reliability checklist
+
+How the platform handles each failure mode the assignment's *Reliability*
+section calls out:
 
 | Failure mode | Handling |
 |---|---|
@@ -693,46 +640,8 @@ Postgres for full end-to-end scenarios; that suite is heavier (spins up real
 service processes) and is treated as a separate, opt-in verification layer
 from the fast per-service unit suites.
 
-## 7. Known gaps and deliberate scope cuts
 
-Being explicit about what's *not* done, and why, per the assignment's request
-to "explain the approach and trade-offs":
-
-- **No real `send_email`/`retrieve_invoices`/`retrieve_customer`/
-  `create_email_draft` handlers.** The seeded catalog advertises these names
-  (mirroring the assignment's example accounting-assistant tools) so that
-  per-agent tool *permissioning* can be demonstrated end-to-end, but only
-  `http_request` and `query_database` have code behind them. The approval
-  mechanism (§4.3) and the generic tool-execution plumbing (mcp_svc handler
-  registry, workbench allow-listing) do not need any changes to support a
-  real `send_email` — it's additive, not a redesign.
-- **No idempotency key on `CreateTask`/`CreateJob`** (§4.2) — duplicate
-  *submissions* (as opposed to duplicate *execution* of an already-submitted
-  job, which is fully handled) are not deduplicated.
-- **SSRF protection is host-literal, not DNS-rebinding-proof** (§3.5) —
-  called out explicitly rather than implied to be complete.
-- **No per-tool-call audit trail** beyond what's inside a step's transcript
-  (§4.4) — sufficient to answer "what was the outcome" but not "list every
-  tool call this job ever made" via a single query.
-- **No rate limiting, LLM provider fallback, or distributed tracing** — all
-  listed as bonus/optional in the assignment; the error-handling and
-  dependency-injection patterns (§4.6, §4.7) are structured so that adding
-  them later (a `RateLimiter` in gateway, a second `Provider` implementation,
-  OpenTelemetry spans around each gRPC/MCP call) is additive rather than a
-  refactor.
-- **Shared-database coupling (deliberate).** The platform runs against a
-  single shared Postgres instance, so both orchestrator and mcp_svc read
-  AES-owned tables directly (their own read-only ORM mappings of `agents` /
-  `tools`) rather than calling AES over gRPC for that data. This is an
-  intentional choice — one database instance to operate, and lower latency on
-  every group-chat construction / `tools/list` than an extra RPC hop — and is
-  safe because neither service writes those tables. The trade-off: it couples
-  three services to one schema, so splitting them onto physically separate
-  stores later would first require replacing those direct reads with an
-  internal `GetAgent`/`GetTool`-style RPC or a cache/event feed. See §9 for
-  the full topology.
-
-## 8. Deliverable / evaluation mapping
+## 7. Deliverable and evaluation mapping
 
 | Assignment ask | Where it's satisfied |
 |---|---|
@@ -746,29 +655,4 @@ to "explain the approach and trade-offs":
 | Human approval | Generic `mutating`-flag gate (§4.3) |
 | Multiple users, concurrent executions | Tenant scoping everywhere (§4.5) + atomic conditional updates (§4.1) + horizontally-scalable poller claiming (§3.4) |
 | Security / guardrails | gateway guardrails (§3.1), mcp_svc SSRF + SQL-parsed tenant scoping (§3.5) |
-| Trade-offs explained | §2, §7 |
-
-## 9. Ports, databases, and configuration reference
-
-| Service | Port | Config file |
-|---|---|---|
-| gateway | 50054 (gRPC) | `services/gateway/config.toml` |
-| agent_execution_service | 50051 (gRPC) | `services/agent_execution_service/config.toml` |
-| job_svc | 50052 (gRPC) | `services/job_svc/config.toml` |
-| orchestrator | 50053 (gRPC) | `services/orchestrator/config.toml` |
-| mcp_svc | 8003 (HTTP/MCP) | `services/mcp_svc/config.toml` |
-
-**Database topology.** All stateful services share a **single Postgres
-instance** (`localhost:5432` in dev, configured under each `config.toml`'s
-`[postgres]` section). Within that one instance there are two databases:
-
-- `agent_execution_service` — owned by AES: the `agents`, `tools`, and `tasks`
-  tables, plus the demo `customers`/`invoices` tables. **orchestrator**
-  (agents/tools, for group-chat construction) and **mcp_svc** (tools +
-  customers/invoices, for its handlers) connect to this same database and read
-  those tables directly.
-- `job_svc` — owned by job_svc: the `jobs` table.
-
-**gateway** is stateless and has no database. So services are separated by
-table/database ownership *within* one shared instance, not by an instance per
-service — see the coupling trade-off in §7.
+| Trade-offs explained | §2 |

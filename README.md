@@ -45,8 +45,7 @@ rationale lives in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 | SQL safety | `sqlglot` parsing for the `query_database` tool |
 | Testing | `pytest` with in-memory SQLite + fakes; a subprocess harness for e2e |
 
-Rationale for the notable picks lives in [`ARCHITECTURE.md`](ARCHITECTURE.md) §2
-(job queue vs. broker, five services, gRPC + MCP, AutoGen vs. a hand-rolled loop).
+Rationale for the notable picks lives in [`ARCHITECTURE.md`](ARCHITECTURE.md)
 
 ## Architecture at a glance
 
@@ -74,9 +73,6 @@ gateway  ── guardrails + egress ── HTTP (OpenAI-compatible) ──▶ LL
 | [`gateway`](services/gateway/README.md) | `50054` | gRPC | none (stateless) | The only path to the LLM; guardrails + provider egress |
 | [`mcp_svc`](services/mcp_svc/README.md) | `8003` | MCP over HTTP | reads AES `tools` + demo `customers`/`invoices` | Tool catalog + execution (`http_request`, `query_database`) |
 
-The shared Postgres instance is separated by database/table ownership: AES owns
-the `agent_execution_service` database (also read by orchestrator and mcp_svc),
-job_svc owns the `job_svc` database, and gateway holds no state.
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full request flow, state
 machines, concurrency model, and the trade-offs behind each decision.
@@ -325,7 +321,7 @@ There is no single all-in-one script; bring up Postgres, then start each
 service. The steps below are a clean-checkout path that matches the service
 defaults (`postgres`/`postgres`, two databases).
 
-**1. Start Postgres and create the two databases.** This is one self-contained
+**1. Start Postgres and create the databases.** This is one self-contained
 option that matches the service defaults (any Postgres works):
 
 ```sh
@@ -337,13 +333,6 @@ docker run -d --name aep-postgres \
 docker exec -u postgres aep-postgres createdb agent_execution_service
 docker exec -u postgres aep-postgres createdb job_svc
 ```
-
-Alternatively use the provided `services/postgres/docker-compose.yml`, but note
-its `.env` defaults to `aep`/`aep`/`aep` and creates a single `aep` database —
-so either edit `.env` to `postgres`/`postgres` (and still create the second
-database), or override every service's `[postgres]` settings via env vars
-(`AEP_POSTGRES_*`, `JOB_SVC_POSTGRES_*`, `MCP_SVC_POSTGRES_*`,
-`ORCHESTRATOR_POSTGRES_*`; see Configuration).
 
 Tables are created automatically on service startup
 (`Base.metadata.create_all`); there is no separate migration step. The demo
@@ -420,64 +409,19 @@ while building this project:
 - **Claude Code (Anthropic)** — primary AI pair-programmer: scaffolding and
   refactoring service code (gRPC servicers, config loaders, typed error
   hierarchies), drafting the design and service documentation
-  ([`ARCHITECTURE.md`](ARCHITECTURE.md) and the per-service READMEs), and
-  producing the structured code review in [`FIXES_PLAN.md`](FIXES_PLAN.md).
-- **Windsurf / Cascade** — consolidating the per-service docs into this root
-  `README.md` and evaluating the documentation against the assignment brief.
+  ([`ARCHITECTURE.md`](ARCHITECTURE.md).
+- **Windsurf / Cascade** — secondar AI pair-programmer.
 
-All AI output was reviewed, tested, and edited by a human; the architecture and
-the engineering trade-offs are the author's own.
+All AI output was reviewed by a human.
 
-## Current limitations and known bugs
-
-These are tracked in full — with file/line references and proposed fixes — in
-[`FIXES_PLAN.md`](FIXES_PLAN.md). The highlights:
-
-**Critical (P0)**
-
-- **Committed test API key** — the e2e test (`tests/test_agent_execution.py`)
-  falls back to a hardcoded, live-format Groq key; it must be rotated and
-  replaced with an env-only lookup.
-- **SSRF guard is bypassable** — `mcp_svc`'s `http_request` host check allows
-  non-standard IP encodings (integer/hex/octal, trailing-dot host), so
-  loopback / cloud-metadata targets can slip through; it needs a
-  resolve-then-validate approach.
-- **Hung orchestrator stalls a job forever** — the `job_svc → orchestrator`
-  `Chat` call has no timeout and the heartbeat keeps renewing the lease, so a
-  stuck call leaves the job `running` indefinitely instead of failing into the
-  retry path.
-
-**High (P1) — correctness & safety**
-
-- **Approval isn't bound to the exact call** — `approved` is a coarse per-run
-  boolean, so a resumed run may call a different mutating tool (or different
-  args) than what the human reviewed.
-- **The approval "pause" is a post-hoc relabel** — the group chat continues
-  after a mutating refusal, so later non-mutating tool calls still execute and
-  repeat on resume.
-- **Step checkpoint is written after the side effect** — a crash in that window
-  re-runs a (possibly mutating) step, making execution at-least-once rather than
-  the documented at-most-once.
-- **Terminal states are revivable** — `UpdateJob(queued)` / `ApproveTask` can
-  requeue `dead`/`cancelled` jobs, and approving a `failed` task re-runs it
-  outside the retry budget.
-- **Batch-claim lease decay** — a job late in a claimed batch can have its lease
-  expire before it starts, letting another pod double-run it.
-- **A finished job can be dead-lettered** — a crash between the `completed`
-  checkpoint and the `succeeded` transition lets the reaper mark it `dead`.
-- **Timeouts / error codes** — `orchestrator`'s `mcp.timeout_seconds` is unused,
-  and downstream outages surface as `INTERNAL` instead of a retryable
-  `UNAVAILABLE`.
-- **Tool safety** — `query_database` permits arbitrary SQL functions
-  (`pg_sleep`, `pg_read_file`) with no statement timeout; `UpdateTool` can
-  silently clear the `mutating` approval flag; `http_request` JSON responses are
-  unbounded in size.
-
-**Lower priority (P2) & gaps** — per-service robustness nits, several testing
-gaps (AES CRUD happy-path, gateway servicer, a real AutoGen integration test,
-Postgres-backed concurrency, deeper e2e scenarios), and doc reconciliation
-between `ARCHITECTURE.md`'s intended design and the items above. All enumerated
-in [`FIXES_PLAN.md`](FIXES_PLAN.md) §3–§6.
+## Current limitations and known gaps
+- Missing e2e testing. (I'm sure some things would break on e2e testing but they should be trivially fixable)
+- Missing timeouts and deadlines on calls.
+- Rigorous testing for human approved flow.
+- Rigorous testing for job service idempotency.
+- Currently proto dependencies are copied but we can import them from the service. 
+- Missing fetch job progress API.
+- Missing single docker file to get the system started as a single unit (was facing permission issues with docker as it is managed by the employer).
 
 ## Future extensions
 
@@ -501,6 +445,7 @@ structured so these are additive rather than redesigns; natural next steps:
   gateway.
 - **Finer-grained tool permissions** — per-agent tool grants exist; extend to
   per-argument / per-scope policies.
+- **Protection against OWASP Top10/LLM Top10** - can strengthen prompts and checks to protect any malicious attempt.
 
 **Reliability & operations**
 
@@ -513,17 +458,16 @@ structured so these are additive rather than redesigns; natural next steps:
   only; add metrics and a trace id propagated across the five hops.
 - **Load testing** — a harness to validate the horizontally-scaled poller and
   the concurrency claims under load.
-
-Broader production hardening (idempotency keys, DB migrations, a whole-system
-Docker/compose, pagination) is tracked in [`FIXES_PLAN.md`](FIXES_PLAN.md) §5.
+- **Stricter validations** — can add more strict validations on tools and agent creation flow.
+- **Pagination** — can add support for pagination.
+- **DI Patterm** — can add support initializing all objects via a DI library.
+- **DB library** — can add support for a generic interface using which all clients communicate to db so that it is easy to change underlying db technology anytime.
 
 ## Further documentation
 
 - **[`ARCHITECTURE.md`](ARCHITECTURE.md)** — system overview, per-service
   design, cross-cutting mechanisms (concurrency, idempotency, human approval),
   and the assignment-requirement mapping.
-- **[`FIXES_PLAN.md`](FIXES_PLAN.md)** — a code-review findings/remediation
-  plan (P0–P2), testing gaps, and outstanding deliverables.
 - **Per-service READMEs** —
   [AES](services/agent_execution_service/README.md) ·
   [job_svc](services/job_svc/README.md) ·
