@@ -8,6 +8,7 @@ import asyncio
 import pytest
 
 from agent_execution_service.errors import NotFoundError, StateError
+from agent_execution_service.job_client import JobStepRef
 from agent_execution_service.services.tasks import TaskService
 
 TENANT = "t1"
@@ -159,3 +160,110 @@ async def test_concurrent_approvals_only_one_wins(sessions) -> None:
 
     (fetched,) = await svc.get(tenant_id=TENANT, ids=[task.id])
     assert fetched.status == "pending"  # waiting_approval -> queued -> pending
+
+
+# -- get_progress: the task-centric progress view ------------------------------
+
+
+def _step(
+    index: int,
+    *,
+    description: str = "do a thing",
+    output: str = "ok",
+    agent: str = "Assistant",
+    requires_approval: bool = False,
+) -> JobStepRef:
+    return JobStepRef(
+        index=index,
+        description=description,
+        output=output,
+        agent=agent,
+        requires_approval=requires_approval,
+    )
+
+
+async def test_get_progress_reports_step_history_and_counts(sessions, jobs) -> None:
+    # A running task exposes the complete ordered step history plus normalized
+    # counts/percentage derived from the plan size and steps done.
+    svc = TaskService(sessions, jobs)
+    task = await svc.create(tenant_id=TENANT, input="go")
+    jobs.set_status(task.job_id, "running")
+    jobs.set_progress(
+        task.job_id,
+        steps_total=3,
+        steps=(_step(0, output="first"), _step(1, output="second")),
+    )
+
+    view = await svc.get_progress(tenant_id=TENANT, task_id=task.id)
+    assert view.task_id == task.id
+    assert view.status == "running"
+    assert view.steps_completed == 2
+    assert view.steps_total == 3
+    assert view.percent_complete == pytest.approx(66.7)
+    assert view.summary == "Running: 2 of 3 steps done"
+    assert [s.output for s in view.steps] == ["first", "second"]
+    assert view.requires_approval is False
+
+
+async def test_get_progress_completed_is_full_with_output(sessions, jobs) -> None:
+    svc = TaskService(sessions, jobs)
+    task = await svc.create(tenant_id=TENANT, input="go")
+    jobs.set_status(task.job_id, "succeeded")
+    jobs.set_result(task.job_id, "the answer is 42")
+    jobs.set_progress(task.job_id, steps_total=2, steps=(_step(0), _step(1)))
+
+    view = await svc.get_progress(tenant_id=TENANT, task_id=task.id)
+    assert view.status == "completed"
+    assert view.percent_complete == 100.0
+    assert view.output == "the answer is 42"
+    assert view.summary == "Completed"
+
+
+async def test_get_progress_failed_surfaces_error(sessions, jobs) -> None:
+    svc = TaskService(sessions, jobs)
+    task = await svc.create(tenant_id=TENANT, input="go")
+    jobs.set_status(task.job_id, "failed")
+    jobs.set_progress(task.job_id, steps_total=2, steps=(_step(0),), error="boom")
+
+    view = await svc.get_progress(tenant_id=TENANT, task_id=task.id)
+    assert view.status == "failed"
+    assert view.error == "boom"
+    assert view.summary == "Failed: boom"
+
+
+async def test_get_progress_waiting_approval_flags_task_and_step(sessions, jobs) -> None:
+    svc = TaskService(sessions, jobs)
+    task = await svc.create(tenant_id=TENANT, input="go")
+    jobs.set_status(task.job_id, "waiting_approval")
+    jobs.set_progress(task.job_id, steps_total=2, steps=(_step(0, requires_approval=True),))
+
+    view = await svc.get_progress(tenant_id=TENANT, task_id=task.id)
+    assert view.requires_approval is True
+    assert view.steps[0].requires_approval is True
+    assert view.summary == "Waiting for approval"
+
+
+async def test_get_progress_pending_has_no_steps(sessions, jobs) -> None:
+    # A freshly created (queued) task has no plan yet: no steps, 0%.
+    svc = TaskService(sessions, jobs)
+    task = await svc.create(tenant_id=TENANT, input="go")
+
+    view = await svc.get_progress(tenant_id=TENANT, task_id=task.id)
+    assert view.status == "pending"
+    assert view.steps == ()
+    assert view.steps_total == 0
+    assert view.percent_complete == 0.0
+    assert view.summary == "Pending"
+
+
+async def test_get_progress_unknown_task_not_found(sessions, jobs) -> None:
+    svc = TaskService(sessions, jobs)
+    with pytest.raises(NotFoundError):
+        await svc.get_progress(tenant_id=TENANT, task_id="nope")
+
+
+async def test_get_progress_other_tenant_task_not_found(sessions, jobs) -> None:
+    svc = TaskService(sessions, jobs)
+    task = await svc.create(tenant_id=OTHER, input="go")
+    with pytest.raises(NotFoundError):
+        await svc.get_progress(tenant_id=TENANT, task_id=task.id)

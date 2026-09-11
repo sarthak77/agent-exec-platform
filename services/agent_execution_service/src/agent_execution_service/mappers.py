@@ -5,11 +5,17 @@ thin RPC adapter.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from google.protobuf.timestamp_pb2 import Timestamp
 
 from aep.agent_execution.v1 import service_pb2
 from agent_execution_service.models import AgentRow, TaskRow, ToolRow
+
+if TYPE_CHECKING:
+    # Imported for typing only, so this module stays a pure proto converter and
+    # takes no runtime dependency on the services layer that builds the view.
+    from agent_execution_service.services.tasks import TaskProgressView
 
 _TASK_STATUS_TO_PROTO = {
     "pending": service_pb2.TASK_STATUS_PENDING,
@@ -76,3 +82,28 @@ def task_to_proto(row: TaskRow) -> service_pb2.Task:
     if row.result:
         kwargs["result"] = service_pb2.TaskResult(output=row.result)
     return service_pb2.Task(**kwargs)
+
+
+def task_progress_to_proto(view: TaskProgressView) -> service_pb2.TaskProgress:
+    return service_pb2.TaskProgress(
+        task_id=view.task_id,
+        status=_TASK_STATUS_TO_PROTO.get(view.status, service_pb2.TASK_STATUS_UNSPECIFIED),
+        percent_complete=view.percent_complete,
+        steps_completed=view.steps_completed,
+        steps_total=view.steps_total,
+        requires_approval=view.requires_approval,
+        summary=view.summary,
+        steps=[
+            service_pb2.TaskProgressStep(
+                index=step.index,
+                description=step.description,
+                output=step.output,
+                agent=step.agent,
+                requires_approval=step.requires_approval,
+            )
+            for step in view.steps
+        ],
+        output=view.output,
+        error=view.error,
+        updated_at=dt_to_ts(view.updated_at),
+    )

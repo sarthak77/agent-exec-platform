@@ -65,6 +65,17 @@ class AgentService:
                 tool_ids_by_agent[agent_id].append(tool_id)
             return [(row, tool_ids_by_agent.get(row.id, [])) for row in rows]
 
+    async def has_any(self, *, tenant_id: str) -> bool:
+        """Whether the tenant has at least one agent configured. A task has
+        nothing to run against until an agent exists, so task submission is
+        gated on this. Uses a LIMIT 1 existence probe rather than loading rows.
+        """
+        async with self._sessions() as session:
+            first = await session.scalar(
+                select(AgentRow.id).where(AgentRow.tenant_id == tenant_id).limit(1)
+            )
+        return first is not None
+
     async def update(
         self,
         *,

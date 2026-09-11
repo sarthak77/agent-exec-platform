@@ -94,6 +94,11 @@ class AgentExecutionServiceStub:
                 request_serializer=aep_dot_agent__execution_dot_v1_dot_service__pb2.RetryTaskRequest.SerializeToString,
                 response_deserializer=aep_dot_agent__execution_dot_v1_dot_service__pb2.RetryTaskResponse.FromString,
                 _registered_method=True)
+        self.GetTaskProgress = channel.unary_unary(
+                '/aep.agent_execution.v1.AgentExecutionService/GetTaskProgress',
+                request_serializer=aep_dot_agent__execution_dot_v1_dot_service__pb2.GetTaskProgressRequest.SerializeToString,
+                response_deserializer=aep_dot_agent__execution_dot_v1_dot_service__pb2.GetTaskProgressResponse.FromString,
+                _registered_method=True)
 
 
 class AgentExecutionServiceServicer:
@@ -171,6 +176,14 @@ class AgentExecutionServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetTaskProgress(self, request, context):
+        """Task-centric progress view, distilled from the backing job's execution
+        checkpoint in job_svc (see TaskProgress).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_AgentExecutionServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -233,6 +246,11 @@ def add_AgentExecutionServiceServicer_to_server(servicer, server):
                     servicer.RetryTask,
                     request_deserializer=aep_dot_agent__execution_dot_v1_dot_service__pb2.RetryTaskRequest.FromString,
                     response_serializer=aep_dot_agent__execution_dot_v1_dot_service__pb2.RetryTaskResponse.SerializeToString,
+            ),
+            'GetTaskProgress': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetTaskProgress,
+                    request_deserializer=aep_dot_agent__execution_dot_v1_dot_service__pb2.GetTaskProgressRequest.FromString,
+                    response_serializer=aep_dot_agent__execution_dot_v1_dot_service__pb2.GetTaskProgressResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -559,6 +577,33 @@ class AgentExecutionService:
             '/aep.agent_execution.v1.AgentExecutionService/RetryTask',
             aep_dot_agent__execution_dot_v1_dot_service__pb2.RetryTaskRequest.SerializeToString,
             aep_dot_agent__execution_dot_v1_dot_service__pb2.RetryTaskResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetTaskProgress(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/aep.agent_execution.v1.AgentExecutionService/GetTaskProgress',
+            aep_dot_agent__execution_dot_v1_dot_service__pb2.GetTaskProgressRequest.SerializeToString,
+            aep_dot_agent__execution_dot_v1_dot_service__pb2.GetTaskProgressResponse.FromString,
             options,
             channel_credentials,
             insecure,

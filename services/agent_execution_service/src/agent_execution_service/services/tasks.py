@@ -30,12 +30,14 @@ same source of truth rather than a lost-update race.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from agent_execution_service.errors import AppError, NotFoundError
-from agent_execution_service.job_client import JobGateway, JobRef
+from agent_execution_service.job_client import JobGateway, JobRef, JobStepRef
 from agent_execution_service.models import TaskRow, new_id, now
 
 # job_svc status string -> the task status string stored in TaskRow.status
@@ -61,6 +63,51 @@ def _task_status(job_status: str) -> str:
 # status or produce a new result, so GetTask serves it straight from the local
 # snapshot without refreshing from job_svc.
 _TERMINAL_STATUSES = frozenset({"completed", "failed"})
+
+
+@dataclass(frozen=True, slots=True)
+class TaskProgressView:
+    """A task-centric snapshot of how far a task has advanced, distilled from
+    its backing job's execution checkpoint. Job-internal mechanics (the planning
+    phase, attempt/retry counters) are already resolved away: what remains is
+    the task's own lifecycle status, a normalized percentage, the ordered step
+    history and the caller-actionable approval flag / one-line summary.
+    """
+
+    task_id: str
+    status: str
+    percent_complete: float
+    steps_completed: int
+    steps_total: int
+    requires_approval: bool
+    summary: str
+    steps: tuple[JobStepRef, ...]
+    output: str
+    error: str
+    updated_at: datetime
+
+
+def _percent_complete(status: str, completed: int, total: int) -> float:
+    # A completed task is 100% by definition even if the plan count is unknown;
+    # otherwise it is the fraction of planned steps finished (0 while the job is
+    # still pending/planning, i.e. before any plan exists).
+    if status == "completed":
+        return 100.0
+    if total <= 0:
+        return 0.0
+    return round(min(completed / total, 1.0) * 100.0, 1)
+
+
+def _summary(status: str, completed: int, total: int, error: str) -> str:
+    if status == "running":
+        return f"Running: {completed} of {total} steps done" if total else "Running: planning"
+    if status == "waiting_approval":
+        return "Waiting for approval"
+    if status == "completed":
+        return "Completed"
+    if status == "failed":
+        return f"Failed: {error}" if error else "Failed"
+    return "Pending"
 
 
 class TaskService:
@@ -95,6 +142,42 @@ class TaskService:
         if stale and await self._refresh(tenant_id=tenant_id, rows=stale):
             rows = await self._load(tenant_id=tenant_id, ids=ids)
         return rows
+
+    async def get_progress(self, *, tenant_id: str, task_id: str) -> TaskProgressView:
+        # Progress is a live view onto the backing job's execution checkpoint,
+        # not a value cached on the task row, so it is always read straight from
+        # the authoritative Job -- there is no terminal short-circuit like get's
+        # snapshot. The task is loaded first (tenant-scoped) so an unknown or
+        # foreign task is a NotFoundError before any job_svc call, and the
+        # remote call is then made OUTSIDE the DB session so a slow job_svc never
+        # pins a connection. Any job_svc error is allowed to surface (unlike
+        # _refresh, which swallows it): the remote progress IS the response, so
+        # failing to fetch it must fail the call rather than return a stale view.
+        async with self._sessions() as session:
+            row = await session.get(TaskRow, task_id)
+            if row is None or row.tenant_id != tenant_id:
+                raise NotFoundError(f"task {task_id} not found")
+            task_id, job_id, updated_at = row.id, row.job_id, row.updated_at
+        ref = await self._jobs.get_job_progress(tenant_id=tenant_id, job_id=job_id)
+        status = _task_status(ref.status)
+        completed = len(ref.steps)
+        # Never report fewer planned steps than have already completed, so a
+        # partially-reported plan can't yield a >100% or nonsensical fraction.
+        total = max(ref.steps_total, completed)
+        error = ref.error if status == "failed" else ""
+        return TaskProgressView(
+            task_id=task_id,
+            status=status,
+            percent_complete=_percent_complete(status, completed, total),
+            steps_completed=completed,
+            steps_total=total,
+            requires_approval=status == "waiting_approval",
+            summary=_summary(status, completed, total, error),
+            steps=ref.steps,
+            output=ref.result,
+            error=error,
+            updated_at=updated_at,
+        )
 
     async def _load(self, *, tenant_id: str, ids: list[str]) -> list[TaskRow]:
         async with self._sessions() as session:

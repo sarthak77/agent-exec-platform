@@ -211,6 +211,18 @@ class RetryTaskResponse(_message.Message):
     success: bool
     def __init__(self, success: _Optional[bool] = ...) -> None: ...
 
+class GetTaskProgressRequest(_message.Message):
+    __slots__ = ("task_id",)
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    task_id: str
+    def __init__(self, task_id: _Optional[str] = ...) -> None: ...
+
+class GetTaskProgressResponse(_message.Message):
+    __slots__ = ("progress",)
+    PROGRESS_FIELD_NUMBER: _ClassVar[int]
+    progress: TaskProgress
+    def __init__(self, progress: _Optional[_Union[TaskProgress, _Mapping]] = ...) -> None: ...
+
 class LLMConfig(_message.Message):
     __slots__ = ("name", "temperature")
     NAME_FIELD_NUMBER: _ClassVar[int]
@@ -296,6 +308,46 @@ class TaskResult(_message.Message):
     OUTPUT_FIELD_NUMBER: _ClassVar[int]
     output: str
     def __init__(self, output: _Optional[str] = ...) -> None: ...
+
+class TaskProgress(_message.Message):
+    __slots__ = ("task_id", "status", "percent_complete", "steps_completed", "steps_total", "requires_approval", "summary", "steps", "output", "error", "updated_at")
+    TASK_ID_FIELD_NUMBER: _ClassVar[int]
+    STATUS_FIELD_NUMBER: _ClassVar[int]
+    PERCENT_COMPLETE_FIELD_NUMBER: _ClassVar[int]
+    STEPS_COMPLETED_FIELD_NUMBER: _ClassVar[int]
+    STEPS_TOTAL_FIELD_NUMBER: _ClassVar[int]
+    REQUIRES_APPROVAL_FIELD_NUMBER: _ClassVar[int]
+    SUMMARY_FIELD_NUMBER: _ClassVar[int]
+    STEPS_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    UPDATED_AT_FIELD_NUMBER: _ClassVar[int]
+    task_id: str
+    status: TaskStatus
+    percent_complete: float
+    steps_completed: int
+    steps_total: int
+    requires_approval: bool
+    summary: str
+    steps: _containers.RepeatedCompositeFieldContainer[TaskProgressStep]
+    output: str
+    error: str
+    updated_at: _timestamp_pb2.Timestamp
+    def __init__(self, task_id: _Optional[str] = ..., status: _Optional[_Union[TaskStatus, str]] = ..., percent_complete: _Optional[float] = ..., steps_completed: _Optional[int] = ..., steps_total: _Optional[int] = ..., requires_approval: _Optional[bool] = ..., summary: _Optional[str] = ..., steps: _Optional[_Iterable[_Union[TaskProgressStep, _Mapping]]] = ..., output: _Optional[str] = ..., error: _Optional[str] = ..., updated_at: _Optional[_Union[datetime.datetime, _timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
+class TaskProgressStep(_message.Message):
+    __slots__ = ("index", "description", "output", "agent", "requires_approval")
+    INDEX_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_FIELD_NUMBER: _ClassVar[int]
+    AGENT_FIELD_NUMBER: _ClassVar[int]
+    REQUIRES_APPROVAL_FIELD_NUMBER: _ClassVar[int]
+    index: int
+    description: str
+    output: str
+    agent: str
+    requires_approval: bool
+    def __init__(self, index: _Optional[int] = ..., description: _Optional[str] = ..., output: _Optional[str] = ..., agent: _Optional[str] = ..., requires_approval: _Optional[bool] = ...) -> None: ...
 
 class TaskMetadata(_message.Message):
     __slots__ = ("created_at", "updated_at")

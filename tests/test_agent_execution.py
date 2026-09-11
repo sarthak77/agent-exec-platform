@@ -225,6 +225,9 @@ class TestAgentExecutionPlatform:
         tenant = "crud-tasks-tenant"
         metadata = (("x-tenant-id", tenant),)
         await self.manager.reset_tenant(tenant_id=tenant)
+        # CreateTask requires the tenant to have at least one agent; this test
+        # exercises task CRUD, not agent creation, so seed one directly.
+        await self.manager.insert_agent(tenant_id=tenant)
 
         assert (await self.manager.snapshot(tenant_id=tenant))["tasks"] == []
 
@@ -269,6 +272,10 @@ class TestAgentExecutionPlatform:
         tenant = "crud-jobs-tenant"
         metadata = (("x-tenant-id", tenant),)
         await self.manager.reset_tenant(tenant_id=tenant)
+        # CreateTask requires the tenant to have at least one agent; this test
+        # drives the job lifecycle via the task API, not agent creation, so
+        # seed one directly.
+        await self.manager.insert_agent(tenant_id=tenant)
 
         assert (await self.manager.snapshot(tenant_id=tenant))["jobs"] == []
 
@@ -393,27 +400,23 @@ class TestAgentExecutionPlatform:
                 ),
                 metadata=metadata,
             )
-            # Two agents, both granted the mutating tool. The execute-phase
-            # SelectorGroupChat requires >=2 participants (the tool-less planner
-            # joins only the planning turn, so a single-agent tenant can't
-            # execute), and giving both the same tool makes the pause
-            # deterministic: whichever agent the selector routes to makes the
-            # gated call.
-            for agent_name in ("Data Analyst", "Invoice Analyst"):
-                await stub.CreateAgent(
-                    service_pb2.CreateAgentRequest(
-                        name=agent_name,
-                        instructions=(
-                            "Answer questions about customers and invoices using the "
-                            "query_database tool to run SQL SELECT queries."
-                        ),
-                        llm_config=service_pb2.LLMConfig(
-                            name="openai/gpt-oss-20b", temperature=0.2
-                        ),
-                        tool_config=service_pb2.ToolConfig(ids=[tool.tool.id]),
+            # A single agent granted the mutating tool. A single-agent tenant is
+            # supported on purpose: the orchestrator pads its execute turn with a
+            # passive placeholder to meet SelectorGroupChat's two-participant
+            # minimum (see groupchat.py's _make_solo_selector), so one real agent
+            # is enough to drive the approval flow -- and this exercises that path.
+            await stub.CreateAgent(
+                service_pb2.CreateAgentRequest(
+                    name="Data Analyst",
+                    instructions=(
+                        "Answer questions about customers and invoices using the "
+                        "query_database tool to run SQL SELECT queries."
                     ),
-                    metadata=metadata,
-                )
+                    llm_config=service_pb2.LLMConfig(name="openai/gpt-oss-20b", temperature=0.2),
+                    tool_config=service_pb2.ToolConfig(ids=[tool.tool.id]),
+                ),
+                metadata=metadata,
+            )
 
             created = await stub.CreateTask(
                 service_pb2.CreateTaskRequest(
@@ -567,3 +570,124 @@ class TestAgentExecutionPlatform:
         # hallucinated guess -- i.e. that the agent actually used the tool.
         outputs = " ".join(step["output"] for step in job["progress"].get("steps", {}).values())
         assert re.search(r"75,?000", outputs), outputs
+
+    async def test_task_progress_api_reports_step_history_to_completion(self) -> None:
+        """Drive a task to completion and observe it end to end through the new
+        `GetTaskProgress` RPC.
+
+        This is the same auto-executing pipeline as
+        test_query_database_tool_auto_executes, but where that test had to read
+        job_svc's database directly for the per-step trail (no proto surfaced
+        it), this drives everything through AES's own gRPC surface: it polls
+        `GetTaskProgress` until the task settles, checking the progress
+        invariants at every observation, then asserts the completed view carries
+        the full ordered step history, a 100% bar and the final answer.
+        """
+        metadata = (("x-tenant-id", TENANT_ID),)
+        async with grpc.aio.insecure_channel(AES_ADDRESS) as channel:
+            stub = service_pb2_grpc.AgentExecutionServiceStub(channel)
+
+            # Ensure the query_database tool + Data Analyst agent exist for this
+            # tenant (idempotent by name), so the task has an agent to run
+            # against and CreateTask's "tenant must have agents" precondition is
+            # satisfied.
+            existing_tools = await stub.GetTool(
+                service_pb2.GetToolRequest(), metadata=metadata
+            )
+            tool_id = next(
+                (t.id for t in existing_tools.tools if t.name == "query_database"), None
+            )
+            if tool_id is None:
+                created_tool = await stub.CreateTool(
+                    service_pb2.CreateToolRequest(
+                        name="query_database",
+                        description=(
+                            "Run a read-only SQL SELECT query against the "
+                            "customers/invoices tables and return the matching rows."
+                        ),
+                    ),
+                    metadata=metadata,
+                )
+                tool_id = created_tool.tool.id
+
+            existing_agents = await stub.GetAgent(
+                service_pb2.GetAgentRequest(), metadata=metadata
+            )
+            if not any(a.name == "Data Analyst" for a in existing_agents.agents):
+                await stub.CreateAgent(
+                    service_pb2.CreateAgentRequest(
+                        name="Data Analyst",
+                        instructions=(
+                            "Answer questions about customers and invoices using the "
+                            "query_database tool to run SQL SELECT queries against "
+                            "the customers and invoices tables."
+                        ),
+                        llm_config=service_pb2.LLMConfig(
+                            name="openai/gpt-oss-20b", temperature=0.2
+                        ),
+                        tool_config=service_pb2.ToolConfig(ids=[tool_id]),
+                    ),
+                    metadata=metadata,
+                )
+
+            created = await stub.CreateTask(
+                service_pb2.CreateTaskRequest(
+                    input=(
+                        "What is the total amount of overdue invoices for the "
+                        "customer named 'Acme Corp'? Reply with just the number."
+                    )
+                ),
+                metadata=metadata,
+            )
+            task_id = created.task.id
+
+            async def get_progress():
+                resp = await stub.GetTaskProgress(
+                    service_pb2.GetTaskProgressRequest(task_id=task_id),
+                    metadata=metadata,
+                )
+                return resp.progress
+
+            # Poll the progress API until the task settles, approving if a
+            # mutating step ever pauses (the seeded query_database is read-only,
+            # so it normally won't). The progress invariants must hold at every
+            # observation along the way.
+            terminal = {
+                service_pb2.TASK_STATUS_COMPLETED,
+                service_pb2.TASK_STATUS_FAILED,
+            }
+            deadline = time.monotonic() + 180.0
+            progress = await get_progress()
+            while progress.status not in terminal:
+                if time.monotonic() > deadline:
+                    pytest.fail(
+                        f"task {task_id} did not finish within 180s "
+                        f"(status={progress.status}, summary={progress.summary!r})"
+                    )
+                assert progress.task_id == task_id
+                assert 0.0 <= progress.percent_complete <= 100.0
+                # steps_completed always matches the surfaced history length.
+                assert progress.steps_completed == len(progress.steps)
+                if progress.status == service_pb2.TASK_STATUS_WAITING_APPROVAL:
+                    assert progress.requires_approval is True
+                    await stub.ApproveTask(
+                        service_pb2.ApproveTaskRequest(task_id=task_id),
+                        metadata=metadata,
+                    )
+                await asyncio.sleep(1.0)
+                progress = await get_progress()
+
+            # Completed: a full, ordered step history with real per-step outputs,
+            # a 100% bar, and the final answer surfaced on the progress view.
+            assert progress.status == service_pb2.TASK_STATUS_COMPLETED, progress.summary
+            assert progress.percent_complete == pytest.approx(100.0)
+            assert progress.requires_approval is False
+            assert progress.steps_completed >= 1
+            assert len(progress.steps) == progress.steps_completed
+            step_indices = [s.index for s in progress.steps]
+            assert step_indices == sorted(step_indices)  # ordered history
+            assert progress.output  # final answer surfaced on the task
+            # The step trail carries the agent's actual tool-backed answer, not a
+            # hallucination -- the seeded Acme Corp overdue total is 75,000.
+            step_outputs = " ".join(step.output for step in progress.steps)
+            assert re.search(r"75,?000", step_outputs), step_outputs

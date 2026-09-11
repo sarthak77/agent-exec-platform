@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from agent_execution_service.errors import NotFoundError, StateError
-from agent_execution_service.job_client import JobGateway, JobRef
+from agent_execution_service.job_client import JobGateway, JobProgressRef, JobRef, JobStepRef
 from agent_execution_service.models import Base
 
 
@@ -49,6 +49,9 @@ class FakeJobGateway(JobGateway):
         self._status: dict[str, str] = {}
         self._result: dict[str, str] = {}
         self._tenant: dict[str, str] = {}
+        self._plan_size: dict[str, int] = {}
+        self._steps: dict[str, tuple[JobStepRef, ...]] = {}
+        self._error: dict[str, str] = {}
         self.delay = delay
         self.created: list[str] = []
 
@@ -64,6 +67,17 @@ class FakeJobGateway(JobGateway):
             raise NotFoundError(f"job_svc: job {job_id} not found")
         return JobRef(
             id=job_id, status=self._status[job_id], result=self._result.get(job_id, "")
+        )
+
+    async def get_job_progress(self, *, tenant_id: str, job_id: str) -> JobProgressRef:
+        if job_id not in self._status:
+            raise NotFoundError(f"job_svc: job {job_id} not found")
+        return JobProgressRef(
+            status=self._status[job_id],
+            steps_total=self._plan_size.get(job_id, 0),
+            steps=self._steps.get(job_id, ()),
+            error=self._error.get(job_id, ""),
+            result=self._result.get(job_id, ""),
         )
 
     async def start_job(self, *, tenant_id: str, job_id: str) -> JobRef:
@@ -95,6 +109,20 @@ class FakeJobGateway(JobGateway):
     # Test helper: simulate a worker recording a job's final output.
     def set_result(self, job_id: str, result: str) -> None:
         self._result[job_id] = result
+
+    # Test helper: simulate the runner's checkpointed execution progress -- the
+    # size of the plan, the completed steps and the most recent error.
+    def set_progress(
+        self,
+        job_id: str,
+        *,
+        steps_total: int = 0,
+        steps: tuple[JobStepRef, ...] = (),
+        error: str = "",
+    ) -> None:
+        self._plan_size[job_id] = steps_total
+        self._steps[job_id] = tuple(steps)
+        self._error[job_id] = error
 
 
 @pytest.fixture

@@ -19,13 +19,12 @@ service AgentExecutionService {
   rpc GetTask(GetTaskRequest) returns (GetTaskResponse);
   rpc ApproveTask(ApproveTaskRequest) returns (ApproveTaskResponse);
   rpc RetryTask(RetryTaskRequest) returns (RetryTaskResponse);
+  rpc GetTaskProgress(GetTaskProgressRequest) returns (GetTaskProgressResponse);
 }
 
 message CreateToolRequest {
   string name = 1;
   optional string description = 2;
-  // If true, every call to this tool by any agent must be approved by a
-  // human before it runs (see AgentToolWorkbench in orchestrator).
   bool mutating = 3;
 }
 
@@ -143,6 +142,14 @@ message RetryTaskResponse {
   bool success = 1;
 }
 
+message GetTaskProgressRequest {
+  string task_id = 1;
+}
+
+message GetTaskProgressResponse {
+  TaskProgress progress = 1;
+}
+
 message LLMConfig {
   string name = 1;
   float temperature = 2;
@@ -172,8 +179,6 @@ message Tool {
   string name = 2;
   optional string description = 3;
   ToolMetadata metadata = 4;
-  // If true, every call to this tool by any agent must be approved by a
-  // human before it runs (see AgentToolWorkbench in orchestrator).
   bool mutating = 5;
 }
 
@@ -194,6 +199,28 @@ message Task {
 
 message TaskResult {
   string output = 1; // final answer, surfaced from the backing job once completed
+}
+
+message TaskProgress {
+  string task_id = 1;
+  TaskStatus status = 2;
+  float percent_complete = 3;          // 0..100; 100 once the task has completed
+  int32 steps_completed = 4;           // steps finished so far
+  int32 steps_total = 5;               // total planned steps (0 until planned)
+  bool requires_approval = 6;          // task is paused awaiting a human approval
+  string summary = 7;                  // human-readable one-line status
+  repeated TaskProgressStep steps = 8; // complete history, in execution order
+  string output = 9;                   // final answer, once completed
+  string error = 10;                   // failure reason, once failed
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+message TaskProgressStep {
+  int32 index = 1;             // position in the task's plan, 0-based
+  string description = 2;      // what this step worked on
+  string output = 3;           // the answer this step produced
+  string agent = 4;            // the agent that produced the output
+  bool requires_approval = 5;  // this step paused on a human-approval gate
 }
 
 enum TaskStatus {

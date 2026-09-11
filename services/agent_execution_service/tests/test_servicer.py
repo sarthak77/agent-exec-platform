@@ -6,8 +6,11 @@ from __future__ import annotations
 
 import grpc
 import pytest
+import pytest_asyncio
 
 from aep.agent_execution.v1 import service_pb2
+from agent_execution_service.job_client import JobStepRef
+from agent_execution_service.models import AgentRow
 from agent_execution_service.servicer import AgentExecutionServicer
 
 TENANT = "t1"
@@ -37,13 +40,40 @@ def servicer(sessions, jobs) -> AgentExecutionServicer:
     return AgentExecutionServicer(sessions, jobs)
 
 
-async def test_create_task_happy_path(servicer) -> None:
+@pytest_asyncio.fixture
+async def seeded_agent(sessions) -> None:
+    """Insert one agent for TENANT so CreateTask's "the tenant must have at
+    least one agent" precondition is satisfied. Shares the servicer's database
+    (the same `sessions` fixture instance)."""
+    async with sessions.begin() as session:
+        session.add(
+            AgentRow(
+                tenant_id=TENANT,
+                name="seed-agent",
+                instructions="do things",
+                llm_config_name="openai/gpt-oss-20b",
+                llm_config_temperature=0.0,
+            )
+        )
+
+
+async def test_create_task_happy_path(servicer, seeded_agent) -> None:
     resp = await servicer.CreateTask(
         service_pb2.CreateTaskRequest(input="hello"), FakeContext()
     )
     assert resp.task.id
     assert resp.task.job_id
     assert resp.task.status == service_pb2.TASK_STATUS_PENDING
+
+
+async def test_create_task_without_agents_failed_precondition(servicer) -> None:
+    # No agent seeded for TENANT, so the tenant has nothing to run a task
+    # against: submission is rejected up front, before any job is created.
+    with pytest.raises(Aborted) as exc:
+        await servicer.CreateTask(
+            service_pb2.CreateTaskRequest(input="hello"), FakeContext()
+        )
+    assert exc.value.code == grpc.StatusCode.FAILED_PRECONDITION
 
 
 async def test_create_task_empty_input_invalid_argument(servicer) -> None:
@@ -67,7 +97,7 @@ async def test_get_task_blank_filter_id_invalid_argument(servicer) -> None:
     assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
 
 
-async def test_get_task_returns_created(servicer) -> None:
+async def test_get_task_returns_created(servicer, seeded_agent) -> None:
     created = await servicer.CreateTask(
         service_pb2.CreateTaskRequest(input="hi"), FakeContext()
     )
@@ -89,7 +119,7 @@ async def test_approve_unknown_task_not_found(servicer) -> None:
     assert exc.value.code == grpc.StatusCode.NOT_FOUND
 
 
-async def test_approve_twice_failed_precondition(servicer, jobs) -> None:
+async def test_approve_twice_failed_precondition(servicer, jobs, seeded_agent) -> None:
     created = await servicer.CreateTask(
         service_pb2.CreateTaskRequest(input="go"), FakeContext()
     )
@@ -184,7 +214,7 @@ async def test_delete_tool_blank_id_invalid_argument(servicer) -> None:
     assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
 
 
-async def test_approve_transitions_status(servicer, jobs) -> None:
+async def test_approve_transitions_status(servicer, jobs, seeded_agent) -> None:
     created = await servicer.CreateTask(
         service_pb2.CreateTaskRequest(input="go"), FakeContext()
     )
@@ -197,3 +227,45 @@ async def test_approve_transitions_status(servicer, jobs) -> None:
     # snapshot reads back as pending for the poller to re-run.
     got = await servicer.GetTask(service_pb2.GetTaskRequest(), FakeContext())
     assert got.tasks[0].status == service_pb2.TASK_STATUS_PENDING
+
+
+async def test_get_task_progress_happy_path(servicer, jobs, seeded_agent) -> None:
+    created = await servicer.CreateTask(
+        service_pb2.CreateTaskRequest(input="go"), FakeContext()
+    )
+    tid = created.task.id
+    jobs.set_status(created.task.job_id, "running")
+    jobs.set_progress(
+        created.task.job_id,
+        steps_total=2,
+        steps=(
+            JobStepRef(
+                index=0, description="d", output="o", agent="A", requires_approval=False
+            ),
+        ),
+    )
+
+    resp = await servicer.GetTaskProgress(
+        service_pb2.GetTaskProgressRequest(task_id=tid), FakeContext()
+    )
+    assert resp.progress.task_id == tid
+    assert resp.progress.status == service_pb2.TASK_STATUS_RUNNING
+    assert resp.progress.steps_total == 2
+    assert resp.progress.steps_completed == 1
+    assert [s.output for s in resp.progress.steps] == ["o"]
+
+
+async def test_get_task_progress_blank_id_invalid_argument(servicer) -> None:
+    with pytest.raises(Aborted) as exc:
+        await servicer.GetTaskProgress(
+            service_pb2.GetTaskProgressRequest(task_id=" "), FakeContext()
+        )
+    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+
+async def test_get_task_progress_unknown_task_not_found(servicer) -> None:
+    with pytest.raises(Aborted) as exc:
+        await servicer.GetTaskProgress(
+            service_pb2.GetTaskProgressRequest(task_id="missing"), FakeContext()
+        )
+    assert exc.value.code == grpc.StatusCode.NOT_FOUND

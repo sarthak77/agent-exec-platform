@@ -25,7 +25,12 @@ from agent_execution_service.errors import (
     ValidationError,
 )
 from agent_execution_service.job_client import JobGateway
-from agent_execution_service.mappers import agent_to_proto, task_to_proto, tool_to_proto
+from agent_execution_service.mappers import (
+    agent_to_proto,
+    task_progress_to_proto,
+    task_to_proto,
+    tool_to_proto,
+)
 from agent_execution_service.services.agents import AgentService
 from agent_execution_service.services.tasks import TaskService
 from agent_execution_service.services.tools import ToolService
@@ -175,6 +180,11 @@ class AgentExecutionServicer(service_pb2_grpc.AgentExecutionServiceServicer):
     async def CreateTask(self, request, context):
         tenant_id = tenant_id_from_metadata(context)
         validate_task_input(request.input)
+        # A task has nothing to run against until the tenant has configured at
+        # least one agent, so reject submission outright (FAILED_PRECONDITION)
+        # rather than creating a job in job_svc that could never be executed.
+        if not await self._agents.has_any(tenant_id=tenant_id):
+            raise StateError("cannot submit a task: no agents are configured for this tenant")
         row = await self._tasks.create(tenant_id=tenant_id, input=request.input)
         return service_pb2.CreateTaskResponse(task=task_to_proto(row))
 
@@ -199,3 +209,10 @@ class AgentExecutionServicer(service_pb2_grpc.AgentExecutionServiceServicer):
         validate_task_id(request.task_id)
         await self._tasks.retry(tenant_id=tenant_id, task_id=request.task_id)
         return service_pb2.RetryTaskResponse(success=True)
+
+    @_handle_errors
+    async def GetTaskProgress(self, request, context):
+        tenant_id = tenant_id_from_metadata(context)
+        validate_task_id(request.task_id)
+        view = await self._tasks.get_progress(tenant_id=tenant_id, task_id=request.task_id)
+        return service_pb2.GetTaskProgressResponse(progress=task_progress_to_proto(view))

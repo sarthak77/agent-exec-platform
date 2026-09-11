@@ -43,6 +43,35 @@ class JobRef:
     result: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class JobStepRef:
+    """One completed step from a job's execution checkpoint, in task-facing
+    terms: its position in the plan, what it worked on, the answer it produced,
+    the agent that produced it, and whether it paused on a human-approval gate.
+    """
+
+    index: int
+    description: str
+    output: str
+    agent: str
+    requires_approval: bool
+
+
+@dataclass(frozen=True, slots=True)
+class JobProgressRef:
+    """The slice of a job_svc Job's execution checkpoint a task cares about:
+    the job's current status, how many steps the runner's plan holds, the
+    ordered completed steps, the most recent error and the final result. Kept
+    protobuf-free (like JobRef) so it is trivial to fake in tests.
+    """
+
+    status: str
+    steps_total: int
+    steps: tuple[JobStepRef, ...] = ()
+    error: str = ""
+    result: str = ""
+
+
 @runtime_checkable
 class JobGateway(Protocol):
     """What TaskService needs from job_svc. Kept protobuf-free so it is trivial
@@ -55,6 +84,8 @@ class JobGateway(Protocol):
     async def start_job(self, *, tenant_id: str, job_id: str) -> JobRef: ...
 
     async def retry_job(self, *, tenant_id: str, job_id: str) -> JobRef: ...
+
+    async def get_job_progress(self, *, tenant_id: str, job_id: str) -> JobProgressRef: ...
 
 
 # job_svc gRPC status code -> our typed error. Anything unmapped bubbles up as a
@@ -132,6 +163,19 @@ class JobClient(JobGateway):
         response = await self._call(self._get_stub().RetryJob, request, tenant_id)
         return _to_ref(response.job)
 
+    async def get_job_progress(self, *, tenant_id: str, job_id: str) -> JobProgressRef:
+        # Read the whole job and surface its execution checkpoint (plan + the
+        # ordered per-step outputs). Unlike get_job, which narrows a job down to
+        # the status/result snapshot the task table caches, this keeps the full
+        # step history so a task can report step-by-step progress.
+        request = service_pb2.GetJobRequest(
+            filter=service_pb2.GetJobRequestFilter(ids=[job_id])
+        )
+        response = await self._call(self._get_stub().GetJob, request, tenant_id)
+        if not response.jobs:
+            raise NotFoundError(f"job_svc: job {job_id} not found")
+        return _to_progress_ref(response.jobs[0])
+
     async def _call(self, method, request, tenant_id: str):  # noqa: ANN001
         try:
             return await method(request, metadata=_md(tenant_id))
@@ -158,5 +202,31 @@ def _to_ref(job: service_pb2.Job) -> JobRef:
         status=_JOB_STATUS_STR.get(job.status, "unspecified"),
         # An unset oneof (or a non-agent-execution result) reads back as ""
         # (proto3 default), which is exactly the "no result yet" sentinel.
+        result=job.result.agent_execution_result.output,
+    )
+
+
+def _to_progress_ref(job: service_pb2.Job) -> JobProgressRef:
+    # progress reads back as an empty JobProgress (proto3 default) for a job the
+    # runner has not planned yet, so plan/steps are simply empty then. Steps are
+    # ordered by their plan index defensively (job_svc already emits them so).
+    progress = job.progress
+    steps = tuple(
+        JobStepRef(
+            index=step.index,
+            description=step.prompt,
+            output=step.output,
+            agent=step.agent,
+            requires_approval=(
+                step.finish_reason == service_pb2.FINISH_REASON_REQUIRES_APPROVAL
+            ),
+        )
+        for step in sorted(progress.steps, key=lambda s: s.index)
+    )
+    return JobProgressRef(
+        status=_JOB_STATUS_STR.get(job.status, "unspecified"),
+        steps_total=len(progress.plan),
+        steps=steps,
+        error=progress.error,
         result=job.result.agent_execution_result.output,
     )

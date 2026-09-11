@@ -30,10 +30,11 @@ anywhere in the schema.
 | --- | --- |
 | `CreateTool` / `GetTool` / `UpdateTool` / `DeleteTool` | Manage the tool catalog for the caller's tenant. |
 | `CreateAgent` / `GetAgent` / `UpdateAgent` / `DeleteAgent` | Manage agents: instructions, `LLMConfig`, and the set of tool ids granted to the agent. |
-| `CreateTask` | Submit a task (`input` string) for asynchronous execution. |
+| `CreateTask` | Submit a task (`input` string) for asynchronous execution. Rejected with `FAILED_PRECONDITION` if the tenant has no agents configured. |
 | `GetTask` | Read a task's status/result by id; a non-terminal task is refreshed from job_svc, a terminal task served from the local snapshot. |
 | `ApproveTask` | Resume a task whose job is paused at a human-approval gate. |
 | `RetryTask` | Requeue a task whose job failed or is dead. |
+| `GetTaskProgress` | Read a **task-centric** progress view for one task id: lifecycle `status`, `percent_complete`, `steps_completed`/`steps_total`, the complete ordered step history (`steps`), a `requires_approval` flag, a human-readable `summary`, and the final `output`/`error`. Always read live from job_svc — never cached. |
 
 `Get*` calls take a `filter.ids` list; an empty list returns every row for
 the tenant, a non-empty list filters to those ids (unknown ids are silently
@@ -52,8 +53,11 @@ flushes to get its id, then `_link_tools` re-validates the requested
 and turns an `IntegrityError` into a `ConflictError` (`_flush_or_conflict`)
 rather than pre-checking existence, avoiding a check-then-insert race.
 
-**Submit a task** — `servicer.CreateTask` validates `input`, then
-`TaskService.create` (`services/tasks.py`) calls `job_client.JobClient.create_job`
+**Submit a task** — `servicer.CreateTask` validates `input`, then rejects the
+call with `FAILED_PRECONDITION` if the tenant has no agents configured
+(`AgentService.has_any`, a `LIMIT 1` existence probe) — a task has nothing to
+run against otherwise, so it is refused before any job is created. Only then
+does `TaskService.create` (`services/tasks.py`) call `job_client.JobClient.create_job`
 **before** touching Postgres: if job_svc rejects the job, no orphaned `tasks`
 row is created. The job is submitted as `JOB_TYPE_AGENT_EXECUTION` with
 `AgentExecutionSpec.instructions = input`. A `TaskRow` is then inserted with
@@ -66,6 +70,22 @@ another tenant), then delegate the actual state transition to job_svc
 (`UpdateJob(QUEUED)` / `RetryJob`) and overwrite the local `status`/`result`
 columns with whatever job_svc reports back (`_save_status`, an absolute
 `UPDATE ... RETURNING`, not a read-modify-write).
+
+**Read task progress** — `GetTaskProgress` is a **live** view, distinct from
+the `GetTask` snapshot: after a tenant-scoped task lookup, `TaskService.get_progress`
+fetches the backing job's execution checkpoint from job_svc
+(`JobClient.get_job_progress`) on **every** call — there is no terminal
+short-circuit and nothing is cached on the `tasks` row. It then *distills* that
+job checkpoint into a task-centric `TaskProgressView` (`mappers.task_progress_to_proto`
+-> `TaskProgress`): the job's own lifecycle becomes the task `status`, the plan
+size and completed steps become `steps_completed`/`steps_total` and a
+normalized `percent_complete`, each checkpointed step becomes an ordered
+`TaskProgressStep` (its sub-prompt as `description`, plus `output`/`agent` and a
+per-step `requires_approval`), and a one-line `summary` is composed. Job-internal
+mechanics (planning phase, attempt/retry counters) are deliberately **not**
+surfaced. Unlike `GetTask`'s best-effort refresh, a job_svc error here is *not*
+swallowed — the remote progress is the whole response, so failing to fetch it
+fails the call.
 
 ## Human approval
 

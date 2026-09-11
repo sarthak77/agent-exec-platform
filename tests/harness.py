@@ -383,6 +383,38 @@ class ServiceManager:
 
         return task_id, job_id
 
+    async def insert_agent(self, *, tenant_id: str, name: str = "seed-agent") -> str:
+        """Insert a minimal agent row for ``tenant_id`` straight into AES's
+        database and return its id.
+
+        ``CreateTask`` refuses a tenant with no agents configured
+        (FAILED_PRECONDITION) -- a task has nothing to run against otherwise --
+        so a task-submitting test that isn't itself exercising agent creation
+        seeds one here first, the same way ``insert_dead_job`` seeds a job.
+        """
+        import uuid
+        from datetime import UTC, datetime
+
+        agent_id = str(uuid.uuid4())
+        ts = datetime.now(UTC)
+        aes = await self._connect(AES_DATABASE)
+        try:
+            await aes.execute(
+                "INSERT INTO agents (id, tenant_id, name, instructions, "
+                "llm_config_name, llm_config_temperature, version, created_at, "
+                "updated_at) VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $7)",
+                agent_id,
+                tenant_id,
+                name,
+                "do things",
+                "openai/gpt-oss-20b",
+                0.2,
+                ts,
+            )
+        finally:
+            await aes.close()
+        return agent_id
+
     # -- seed data --------------------------------------------------------------
 
     def seed_data(self) -> None:
