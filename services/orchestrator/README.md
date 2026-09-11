@@ -1,34 +1,257 @@
 # orchestrator
 
-Basic AutoGen orchestrator: for each `Chat` request it builds a
-round-robin group chat over all of the caller tenant's configured agents
-(read from `agent_execution_service`'s `agents` table) plus one
-`mcp_connector` participant that carries `mcp_svc`'s live tool catalog,
-routing every inference call through `gateway`
-(`aep.gateway.v1.GatewayService/Chat`). No streaming, no tool execution,
-no persistence of transcripts — see `docs/03-orchestrator.md` at the
-platform root for the fuller design this is a stripped-down v0 of.
+Runs one multi-agent, multi-tool "turn" of a tenant's task: builds an AutoGen
+`SelectorGroupChat` over the tenant's configured agents (one `AssistantAgent`
+per row in `agent_execution_service`'s `agents` table), gives each agent a
+tool workbench scoped to its granted `mcp_svc` tools, routes every model call
+through `gateway`, executes tool calls against `mcp_svc`, and returns the
+resulting transcript — pausing the turn instead of finishing it if a tool
+requires human approval.
 
-## How a turn works
+This is the step-execution core of the platform. It does not decide *when*
+to run a turn, does not own persistence of jobs/steps, and does not own agent
+or tool configuration — those live elsewhere:
 
-1. Extract the tenant id from the `x-tenant-id` metadata header
-   (RBAC is assumed to have happened upstream; see `auth.py`).
-2. Load the tenant's agents + their granted tool names (`agents_repo.py`);
-   `FAILED_PRECONDITION` if the tenant has none.
-3. Best-effort fetch of the MCP tool catalog for context — if `mcp_svc` is
-   unreachable the chat still runs, just without a tool listing
-   (`mcp_connector.py`).
-4. Build one `AssistantAgent` per agent (each with its own temperature)
-   plus the `mcp_connector`, all backed by a shared gRPC channel to
-   `gateway` (`gateway_client.py`, `groupchat.py`).
-5. Run the group chat until `chat.max_messages` total messages, then
-   return the transcript **produced by** the chat (the caller's own input
-   is not echoed back) plus token usage summed across every participant
-   (`run.py`).
+- **`agent_execution_service`** owns the `agents` / `tools` / `agent_tools`
+  tables (instructions, model config, tool grants, which tools are
+  `mutating`). `orchestrator` only reads them (`agents_repo.py`, `models.py`
+  — a read-only mirror of that schema; orchestrator never writes to or runs
+  DDL against these tables).
+- **`job_svc`** is the caller. It drives a task through however many
+  `Chat` turns it takes, decides when a job is `waiting_approval` vs.
+  `running` vs. `completed` based on this service's `finish_reason`, and is
+  the one that resends `approved=true` on the resumed call after a human
+  approves. Orchestrator itself is stateless across turns — every fact
+  needed for resumption is either in the request or reloaded from Postgres.
+- **`gateway`** is the only path to an LLM. Orchestrator never calls a model
+  directly; every `AssistantAgent` and the group chat's speaker-selector are
+  backed by a `GatewayChatCompletionClient` that calls `gateway`'s
+  `Chat` RPC.
+- **`mcp_svc`** hosts the actual tool implementations (invoices, customers,
+  email draft/send). Orchestrator calls it directly over MCP
+  streamable-HTTP (not through gateway) to list and invoke tools.
 
-The tool catalog is surfaced as plain text in the connector's system
-prompt: `gateway` is a single-model, no-tools passthrough and `mcp_svc`
-has no execution binding yet, so tools are described, never called.
+## API surface
+
+`proto/aep/orchestrator/v1/service.proto`:
+
+```proto
+service OrchestratorService {
+  rpc Chat(ChatRequest) returns (ChatResponse);
+}
+
+message ChatRequest {
+  repeated Message messages = 1;
+  bool approved = 2;   // one-shot resume signal, see "Human approval" below
+}
+
+message ChatResponse {
+  repeated Message messages = 1;   // transcript produced by the group chat this turn
+  TokenUsage token_usage = 2;      // summed across every participant's gateway calls
+  string finish_reason = 3;        // "stop" | "max messages reached" | ... | "requires_approval"
+}
+```
+
+A vendored copy of gateway's proto (`proto/aep/gateway/v1/service.proto`) is
+checked in so this service can generate a client stub for it; there is no
+shared proto package yet, so it must be kept in sync with `gateway`'s copy by
+hand. `ChatRequest.tools`/`tool_choice` in that proto is what makes gateway
+function-calling-capable — see `model_client.py` below.
+
+## Request lifecycle
+
+For one `Chat` call (`servicer.py` → `run.py`):
+
+1. **Tenant extraction** (`auth.py`) — the tenant id comes from the
+   `x-tenant-id` gRPC metadata header. Missing header → `AuthenticationError`
+   → `UNAUTHENTICATED`. RBAC/permission checking is assumed to have already
+   happened upstream of this service; `auth.py` only extracts identity, it
+   does not authorize.
+2. **Build the group chat** (`groupchat.py:build_group_chat`):
+   - Load the tenant's agents plus their granted tool names via
+     `agents_repo.list_agents_for_tenant` (one query for `agents` +
+     `agent_tools`, one follow-up query for the referenced `tools` rows).
+     Empty result → `NoAgentsError` → `FAILED_PRECONDITION`.
+   - For each agent: slugify its name into a unique AutoGen participant id
+     (`_slugify`, collision-safe), create a `GatewayChatCompletionClient`
+     carrying that agent's own `temperature`, create an `AgentToolWorkbench`
+     scoped to that agent's `tool_names` and `mutating_tool_names`, and wrap
+     them in an `AssistantAgent` whose system message appends an explicit
+     "you may ONLY call these tools" instruction on top of the agent's
+     configured instructions.
+   - Add one more `GatewayChatCompletionClient` (temperature `0.0`) for the
+     `SelectorGroupChat`'s own speaker-selection LLM call.
+   - Assemble a `SelectorGroupChat` over all participants, terminating at
+     `chat.max_messages` total messages (`MaxMessageTermination`), with
+     `allow_repeated_speaker=True` so a single agent can take several turns
+     in a row (e.g. call a tool, see the result, call another tool).
+3. **Run the turn** (`run.py:run_chat`) — the caller's input messages become
+   one `TextMessage` per message and are fed to `team.run(...,
+   output_task_messages=False)`, which excludes the caller's own input from
+   the returned message list — the transcript is defined as *only* what the
+   group chat produced this turn.
+4. **Tool execution loop** — this happens *inside* `team.run`, driven by
+   AutoGen, not by orchestrator's own code: when a `GatewayChatCompletionClient.create`
+   call returns tool calls, AutoGen invokes them against that agent's
+   `AgentToolWorkbench.call_tool`, feeds the results back as
+   `FunctionExecutionResultMessage`s, and calls the model again — repeating
+   until the model stops requesting tools or `max_messages` is hit.
+5. **Transcript + usage** — `_to_transcript` keeps only `BaseChatMessage`
+   entries with string content, labels every one `role="assistant"` (every
+   surviving message is agent-produced), and resolves the internal slug back
+   to the agent's display name via `name_by_slug`. Token usage is summed
+   across every `GatewayChatCompletionClient.total_usage()` created for the
+   run, including the selector's.
+6. **Finish reason** — normally the group chat's own `stop_reason` (e.g.
+   `"max messages reached"`, or AutoGen's default `"stop"`). If any
+   participant's workbench recorded a pending approval during the run
+   (`GroupChatSession.approval_sink`), that overrides the stop reason to the
+   constant `APPROVAL_FINISH_REASON = "requires_approval"` — job_svc's
+   runner keys off this exact string.
+
+## Human approval
+
+The approval gate is enforced **locally in `AgentToolWorkbench.call_tool`**,
+before any call reaches `mcp_svc` — not as an LLM instruction, not by
+mcp_svc, and not by job_svc:
+
+- Each tool grant carries a `mutating` flag (`tools.mutating` in
+  `agent_execution_service`'s schema); `agents_repo.py` exposes the subset of
+  an agent's granted tools that are mutating as `AgentSpec.mutating_tool_names`.
+- `AgentToolWorkbench` is constructed per-agent, per-run with that agent's
+  `mutating_tool_names` and the request's `approved` flag. If a requested
+  tool name is in `mutating` and `approved` is `False`, the workbench refuses
+  the call **without ever opening an mcp_svc session** — a `send_email`-style
+  call has zero side effects until approved. The refusal is recorded as an
+  `APPROVAL_REQUIRED` marker string, appended to that workbench's own
+  `pending_approvals` list, and returned to the model as an ordinary (non-error)
+  tool result so the model can tell the user the action is on hold.
+- `mcp_svc` itself can also independently decline an action pending approval
+  (its own `APPROVAL_REQUIRED` marker in a tool's *result* content, e.g. for
+  `send_email` — see `mcp_svc/handlers.py`); the workbench detects that marker
+  in the result text too and records it into the same sink. This means the
+  gate is enforced twice — once cheaply and locally by `mutating` flag lookup
+  (no network call), once authoritatively by the tool implementation itself —
+  so a bug in either the catalog's `mutating` flag or the workbench's local
+  set alone does not by itself allow an unapproved mutation through.
+- After the run, `GroupChatSession.approval_sink` flattens every
+  participant's `pending_approvals` (each workbench owns its own list; there
+  is no single list shared across concurrent agents to write into, so no
+  ordering assumption about interleaved tool calls is required). A non-empty
+  sink flips `run_chat`'s `finish_reason` to `requires_approval` regardless of
+  what the group chat's own stop condition says.
+- **Resuming**: `approved` on `ChatRequest` is a one-shot, per-call signal,
+  not a durable grant — it is threaded straight into every
+  `AgentToolWorkbench` built for that one call (`build_group_chat(tenant_id,
+  approved=...)`). job_svc is expected to replay the same step (the same
+  pending tool call, from the same conversation state it reloads) with
+  `approved=true` after a human approves; the *next* unrelated mutating call
+  in a later turn still gates unless it too arrives with `approved=true`.
+  Orchestrator holds no memory of "this particular call was approved" beyond
+  the lifetime of that one `Chat` RPC — durability of the pending-approval
+  state across the pause is job_svc's responsibility, not orchestrator's.
+
+## Tool execution (real, not descriptive-only)
+
+Tool calling is fully wired end to end, not merely described in a system
+prompt:
+
+- `gateway`'s `ChatRequest`/`ChatResponse` carry OpenAI-style function
+  calling (`tools`, `tool_choice`, `tool_calls`) — `model_client.py`'s
+  `GatewayChatCompletionClient` bridges AutoGen's tool protocol to that wire
+  format: outgoing `Tool`/`ToolSchema` objects become gateway `Tool`s (JSON
+  Schema `parameters` serialized to a string); a gateway response with
+  `tool_calls` becomes a `CreateResult` with `finish_reason="function_calls"`
+  and content = a list of `FunctionCall`s, which AutoGen then executes.
+- Execution goes through `AgentToolWorkbench` (`mcp_workbench.py`), built
+  directly on the `mcp>=2,<3` streamable-HTTP client rather than
+  `autogen_ext`'s `McpWorkbench` (that helper imports an mcp 1.x-only symbol
+  incompatible with this service's pin). Each `list_tools`/`call_tool` opens
+  a short-lived, tenant-scoped mcp_svc session (`x-tenant-id` header) — the
+  workbench itself holds no persistent connection.
+- Tool visibility is scoped twice: `list_tools` only returns schemas for
+  names in the agent's `_allowed` set (so the model never even sees a tool
+  it isn't granted), and `call_tool` independently re-checks `_allowed`
+  before doing anything — a tool named outside the grant is refused locally
+  with `is_error=True`, never reaching mcp_svc. The agent's system message
+  (`groupchat.py:_agent_system_message`) also tells the model explicitly
+  which tools it may call, as a second, non-authoritative layer (guardrail
+  against "unexpected LLM behaviour" attempting an out-of-grant call — the
+  authoritative enforcement is the workbench check, not the prompt).
+- A tool listed in `mcp_svc`'s catalog but with no registered execution
+  handler still comes back through as mcp_svc's own "no execution binding
+  configured" response — orchestrator does not special-case this; it flows
+  back to the model like any other tool result.
+- Failures are best-effort at the listing level: if `mcp_svc` is unreachable,
+  `list_tools` swallows the exception and returns an empty tool list (logged
+  as a warning) rather than failing the whole turn — an agent with no
+  reachable tools just proceeds tool-less for that call. `call_tool` failures
+  are surfaced to the model as an `is_error=True` tool result (a normal,
+  retryable-by-the-model outcome), not raised up to fail the RPC.
+
+## Execution / context state
+
+- **Tracked per run, in memory only:** the group chat's message history for
+  that turn, each participant's per-call and cumulative token usage
+  (`GatewayChatCompletionClient.actual_usage()` / `total_usage()`), and each
+  workbench's `pending_approvals`.
+- **Not persisted anywhere by this service:** there is no transcript store,
+  no conversation/session table, no cross-turn memory. Every `Chat` call
+  rebuilds the group chat from scratch from Postgres (agents/tools) plus
+  whatever `messages` the caller supplies. Multi-turn continuity — "what did
+  we already say in this task" — is entirely the caller's (job_svc's)
+  responsibility: it must supply the running conversation as `messages` on
+  each call and persist the transcript on its own side (execution history is
+  a job_svc/agent_execution_service concern, not orchestrator's).
+- This statelessness is what makes crash recovery simple on this service's
+  side: a worker process crash mid-turn loses nothing that mattered, because
+  orchestrator never held authoritative state — job_svc can simply retry the
+  `Chat` call.
+
+## Guardrails
+
+Orchestrator applies none of its own beyond tool-grant scoping (above). Input
+guardrails (empty/oversized input, blocklist terms, PII redaction) are
+enforced once, upstream, inside `gateway`, and apply to every message this
+service sends it — orchestrator relies on that entirely rather than
+duplicating it.
+
+## Multi-tenancy
+
+Every DB query and every mcp_svc call in a turn is scoped by the
+`x-tenant-id` extracted in `auth.py`: `agents_repo.list_agents_for_tenant`
+filters `agents`/`tools` by `tenant_id` (with a redundant-but-cheap
+defense-in-depth re-filter on the tools follow-up query), and
+`_mcp_session` forwards the same tenant id as an `x-tenant-id` header to
+mcp_svc so tool execution is scoped there too. There is no cross-tenant
+sharing of agents, tools, gateway clients, or workbenches — everything above
+is built fresh, per tenant, per call.
+
+## Failure handling
+
+| Failure | Behavior |
+| --- | --- |
+| Missing `x-tenant-id` | `UNAUTHENTICATED` (`auth.py` → `AuthenticationError`) |
+| Tenant has no agents configured | `FAILED_PRECONDITION` (`NoAgentsError`) |
+| `gateway` unreachable / times out / overloaded | The underlying `grpc.aio.AioRpcError`'s code is propagated verbatim if it's `UNAVAILABLE`, `DEADLINE_EXCEEDED`, or `RESOURCE_EXHAUSTED` (so callers can tell a transient dependency failure from a real bug), else collapsed to `INTERNAL` (`servicer.py:_handle_errors`) |
+| `mcp_svc` unreachable during tool listing | Swallowed — empty tool list for that agent, chat proceeds |
+| `mcp_svc` unreachable during a tool call | Surfaced to the model as an `is_error=True` tool result, chat proceeds |
+| Any other unhandled exception | Logged with a stack trace, collapsed to `INTERNAL` — no internal detail leaks to the caller |
+
+`servicer.py`'s `_handle_errors` decorator centralizes this mapping (mirrors
+`agent_execution_service/servicer.py`'s convention) so `Chat` itself has no
+try/except noise.
+
+## Observability
+
+Structured Python `logging` at `INFO` for server lifecycle (listen address,
+shutdown) and `WARNING` for degraded-but-handled paths (mcp_svc listing/call
+failures) and propagated upstream gateway errors; unhandled exceptions are
+logged with `logger.exception` before collapsing to `INTERNAL`. Token usage
+(prompt/completion/total, summed across every participant including the
+selector) is returned on every `ChatResponse` so a caller can attribute LLM
+cost per turn. There is no distributed tracing or metrics export today —
+noted as a gap below.
 
 ## Run
 
@@ -37,19 +260,21 @@ uv sync
 uv run orchestrator
 ```
 
-Needs Postgres reachable with the `agents`/`agent_tools`/`tools` tables
-that `agent_execution_service` owns and creates, plus `gateway` up on its
-configured port for `Chat` to succeed. Config (gRPC host/port, Postgres,
-gateway, MCP url, `chat.max_messages`) lives in `config.toml`; override its
-path with `ORCHESTRATOR_CONFIG_FILE`.
+Needs Postgres reachable with the `agents`/`agent_tools`/`tools` tables that
+`agent_execution_service` owns and creates, `gateway` up on its configured
+port, and (for any tool-using flow) `mcp_svc` up and reachable. Config
+(gRPC host/port, Postgres, gateway, mcp url, `chat.max_messages`) lives in
+`config.toml`; override its path with `ORCHESTRATOR_CONFIG_FILE`.
 
-`chat.max_messages` bounds *total* messages in a turn (input + agent
-turns), so size it with the participant count and expected input in mind.
+`chat.max_messages` bounds *total* messages in a turn, including every
+tool-call/tool-result round trip — size it for a multi-step tool sequence
+(e.g. retrieve → draft → send), not just a single question/answer; the
+default is `20`.
 
 ## Proto
 
-`proto/aep/orchestrator/v1/service.proto` defines
-`OrchestratorService.Chat`. A vendored copy of `gateway`'s proto lives at
+`proto/aep/orchestrator/v1/service.proto` defines `OrchestratorService.Chat`.
+A vendored copy of `gateway`'s proto lives at
 `proto/aep/gateway/v1/service.proto` so this service can generate a client
 stub for it — keep it in sync with `gateway`'s copy by hand. After editing
 either, regenerate stubs with `./scripts/gen_proto.sh`.
@@ -60,14 +285,39 @@ either, regenerate stubs with `./scripts/gen_proto.sh`.
 uv run --group dev pytest
 ```
 
-Unit tests cover the pure helpers (`_slugify`, transcript mapping) and the
-gateway model client's usage accounting / `finish_reason` mapping against a
-fake stub — no Postgres, gateway, or MCP server required.
+Unit tests cover: the pure helpers (`_slugify`, transcript mapping in
+`test_transcript.py`); the gateway model client's usage accounting and
+`finish_reason` mapping against a fake stub (`test_model_client.py`); and the
+full human-approval signalling path — workbench-level marker detection,
+per-agent sink isolation, session-level sink aggregation, `run_chat`'s
+finish-reason override, and the mutating-tool local refusal/approval gate
+(`test_approval.py`). None of this requires Postgres, gateway, or mcp_svc —
+dependencies are faked/monkeypatched at their module boundary.
 
 ## Try it
 
 ```sh
 grpcurl -plaintext -H 'x-tenant-id: t1' \
-  -d '{"messages": [{"role": "user", "content": "introduce yourselves"}]}' \
+  -d '{"messages": [{"role": "user", "content": "find overdue invoices and email the customers"}]}' \
   localhost:50053 aep.orchestrator.v1.OrchestratorService/Chat
 ```
+
+## Known limitations
+
+- **No streaming.** `Chat` is request/response; a long multi-tool turn gives
+  the caller nothing until it fully finishes or pauses for approval.
+- **No transcript/session persistence.** Every call is a from-scratch
+  rebuild; job_svc must carry the full running conversation on every request.
+- **No parallel tool execution.** `SelectorGroupChat` picks one speaker at a
+  time; a single agent's own multi-tool sequence within its turn is also
+  serial (whatever AutoGen's `AssistantAgent` tool loop does internally).
+- **Approval state doesn't survive past the RPC.** `approved` only ever
+  affects the one call it's sent on; there is no "this job's pending call is
+  now approved" record kept here — that durability has to live in job_svc.
+- **No per-service guardrails or rate limiting** beyond what gateway already
+  does upstream; no distributed tracing/metrics beyond logs and per-response
+  token usage.
+- **Speaker selection costs an extra LLM call per turn change** (the
+  `SelectorGroupChat`'s own selector model), which adds latency and token
+  cost on top of each agent's own calls — a fixed round-robin order would be
+  cheaper but less flexible for multi-agent tasks.
