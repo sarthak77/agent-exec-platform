@@ -331,6 +331,58 @@ class ServiceManager:
         finally:
             await jobs_conn.close()
 
+    async def insert_dead_job(
+        self, *, tenant_id: str, input: str = "a dead-lettered job"
+    ) -> tuple[str, str]:
+        """Insert a job already dead-lettered (``status='dead'``) plus the AES
+        task that handles it, straight into Postgres, and return
+        ``(task_id, job_id)``.
+
+        Reaching ``dead`` for real means burning both the automatic
+        (attempts/max_attempts) and manual (retry_count/max_retries) budgets, so
+        a test that needs a terminal, no-longer-retryable job simulates one here.
+        The job is inserted ``dead`` (never ``queued``), so the poller -- which
+        only ever claims ``queued`` -- leaves it alone and there is no race.
+        """
+        import uuid
+        from datetime import UTC, datetime
+
+        job_id = str(uuid.uuid4())
+        task_id = str(uuid.uuid4())
+        ts = datetime.now(UTC)
+
+        jobs_conn = await self._connect(JOB_SVC_DATABASE)
+        try:
+            await jobs_conn.execute(
+                "INSERT INTO jobs (id, tenant_id, type, spec, status, attempts, "
+                "max_attempts, retry_count, max_retries, progress, created_at, "
+                "updated_at) VALUES ($1, $2, 'agent_execution', $3::json, 'dead', "
+                "3, 3, 3, 3, $4::json, $5, $5)",
+                job_id,
+                tenant_id,
+                "{}",
+                "{}",
+                ts,
+            )
+        finally:
+            await jobs_conn.close()
+
+        aes = await self._connect(AES_DATABASE)
+        try:
+            await aes.execute(
+                "INSERT INTO tasks (id, tenant_id, input, job_id, status, result, "
+                "created_at, updated_at) VALUES ($1, $2, $3, $4, 'failed', '', $5, $5)",
+                task_id,
+                tenant_id,
+                input,
+                job_id,
+                ts,
+            )
+        finally:
+            await aes.close()
+
+        return task_id, job_id
+
     # -- seed data --------------------------------------------------------------
 
     def seed_data(self) -> None:

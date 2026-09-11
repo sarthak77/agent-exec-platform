@@ -312,6 +312,53 @@ class TestAgentExecutionPlatform:
             jobs = (await self.manager.snapshot(tenant_id=tenant))["jobs"]
             assert [j["id"] for j in jobs] == [job_id]
 
+    async def test_retry_task_rejected_once_job_is_dead(self) -> None:
+        """A task whose job has been dead-lettered must not be retryable.
+
+        `dead` is terminal: both the automatic (attempts) and manual
+        (retry_count) budgets are spent, so job_svc's RetryJob guard -- which
+        admits only a `failed` job -- rejects it and AES surfaces that as
+        FAILED_PRECONDITION. Same guard test_job_crud sees for a still-queued
+        job, at the opposite (terminal) end of the lifecycle. The dead job and
+        its task are inserted straight into Postgres (reaching `dead` for real
+        would mean burning every retry), and the rejected retry must leave both
+        untouched.
+        """
+        tenant = "e2e-retry-dead-tenant"
+        metadata = (("x-tenant-id", tenant),)
+        await self.manager.reset_tenant(tenant_id=tenant)
+
+        # Simulate a job that has exhausted every retry and been dead-lettered,
+        # plus the AES task that handles it.
+        task_id, job_id = await self.manager.insert_dead_job(tenant_id=tenant)
+        assert (await self.manager.get_job(job_id))["status"] == "dead"
+
+        async with grpc.aio.insecure_channel(AES_ADDRESS) as channel:
+            stub = service_pb2_grpc.AgentExecutionServiceStub(channel)
+
+            # RetryTask on a dead job is refused by job_svc's state guard and
+            # surfaced as FAILED_PRECONDITION -- the task is never requeued.
+            with pytest.raises(grpc.aio.AioRpcError) as exc_info:
+                await stub.RetryTask(
+                    service_pb2.RetryTaskRequest(task_id=task_id), metadata=metadata
+                )
+            assert exc_info.value.code() == grpc.StatusCode.FAILED_PRECONDITION
+
+            # The task still reads as failed (its dead job is terminal).
+            fetched = await stub.GetTask(
+                service_pb2.GetTaskRequest(
+                    filter=service_pb2.GetTaskRequestFilter(ids=[task_id])
+                ),
+                metadata=metadata,
+            )
+            assert fetched.tasks[0].status == service_pb2.TASK_STATUS_FAILED
+
+        # The rejected retry left the job dead: no requeue, no retry_count bump.
+        jobs = (await self.manager.snapshot(tenant_id=tenant))["jobs"]
+        assert [j["id"] for j in jobs] == [job_id]
+        assert jobs[0]["status"] == "dead"
+        assert jobs[0]["retry_count"] == 3
+
     async def test_query_database_tool_auto_executes(self) -> None:
         """Add a tool + agent, then fire a single CreateTask gRPC call at AES
         and let the already-running pipeline execute it on its own.
