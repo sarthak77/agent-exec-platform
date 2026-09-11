@@ -22,14 +22,27 @@ job that previously failed part-way resumes rather than restarting:
     is never executed twice. This is the "execute from the last successful step"
     guarantee: a step runs at most once across all attempts.
 
-On any failure the job is moved to `failed` (which job_svc auto-escalates to
-`dead` once the retry budget, consumed at claim time, is exhausted). The runner
-never lets an exception escape to the poller loop -- a failed job is a normal
-outcome, not a poller fault.
+On any failure the runner reports `failed` and lets job_svc's two-tier retry
+budget (see services/jobs.py) decide the real outcome:
+
+  - While the automatic budget (`max_attempts`) has room left, job_svc silently
+    requeues the job itself (failed -> queued) -- a transient error (a flaky
+    orchestrator call, a dropped connection, ...) is retried without any caller
+    ever noticing or calling RetryJob.
+  - Once that budget is exhausted, the job rests at `failed` for a human to
+    notice and call RetryJob (which grants a fresh automatic cycle and
+    consumes one unit of the separate `max_retries` budget).
+  - Once *both* budgets are exhausted, the job is dead-lettered (`dead`) --
+    terminal, no further retries by anyone.
+
+The runner never lets an exception escape to the poller loop -- a failed job is
+a normal outcome, not a poller fault.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -77,13 +90,28 @@ class ApprovalRequired(Exception):
 
 
 class JobRunner:
-    def __init__(self, jobs: JobService, orchestrator: OrchestratorGateway) -> None:
+    def __init__(
+        self,
+        jobs: JobService,
+        orchestrator: OrchestratorGateway,
+        *,
+        heartbeat_interval_seconds: float = 30.0,
+    ) -> None:
         self._jobs = jobs
         self._orchestrator = orchestrator
+        self._heartbeat_interval = heartbeat_interval_seconds
 
     async def run(self, row: JobRow) -> None:
         """Entry point matching the poller's Runner callable. `row` is a freshly
-        claimed job (already running). Owns the job's terminal transition."""
+        claimed job (already running). Owns the job's terminal transition.
+
+        Runs a background heartbeat alongside `_execute` that periodically
+        renews the job's claim lease (see JobService.renew_lease), so a job
+        whose real wall-clock runtime exceeds the poller's configured
+        `lease_seconds` is not reaped -- and re-claimed by another worker --
+        while this runner is still actively working on it.
+        """
+        heartbeat = asyncio.create_task(self._heartbeat(row.id))
         try:
             await self._execute(row)
         except ApprovalRequired:
@@ -92,6 +120,21 @@ class JobRunner:
         except Exception:
             logger.exception("job %s failed; marking failed", row.id)
             await self._mark_failed(row)
+        finally:
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat
+
+    async def _heartbeat(self, job_id: str) -> None:
+        while True:
+            await asyncio.sleep(self._heartbeat_interval)
+            try:
+                await self._jobs.renew_lease(job_id=job_id)
+            except Exception:
+                # A missed renewal is not fatal -- the next tick retries, and
+                # the lease has slack (lease_seconds is set well above this
+                # interval) to absorb an occasional failure.
+                logger.exception("job %s: lease renewal failed", job_id)
 
     async def _execute(self, row: JobRow) -> None:
         prompt = self._prompt_of(row)
@@ -177,10 +220,22 @@ class JobRunner:
         )
 
     async def _mark_failed(self, row: JobRow) -> None:
-        # running -> failed (job_svc escalates to dead when the budget, consumed
-        # at claim, is exhausted). If the job is somehow no longer running, let
-        # the resulting StateError surface to the poller's safety net.
-        await self._jobs.update(tenant_id=row.tenant_id, job_id=row.id, status="failed")
+        # running -> failed/queued/dead: job_svc's two-tier budget (see
+        # JobService._fail) decides the real outcome. If the job is somehow no
+        # longer running, let the resulting StateError surface to the poller's
+        # safety net.
+        updated = await self._jobs.update(
+            tenant_id=row.tenant_id, job_id=row.id, status="failed"
+        )
+        logger.info(
+            "job %s failed (attempt %d/%d, retry %d/%d); now %s",
+            row.id,
+            updated.attempts,
+            updated.max_attempts,
+            updated.retry_count,
+            updated.max_retries,
+            updated.status,
+        )
 
     @staticmethod
     def _prompt_of(row: JobRow) -> str:

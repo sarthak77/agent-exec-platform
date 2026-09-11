@@ -15,6 +15,7 @@ message CreateJobRequest {
   JobType type = 1;
   JobSpec spec = 2;
   optional int32 max_attempts = 3;
+  optional int32 max_retries = 4;
 }
 
 message CreateJobResponse {
@@ -71,6 +72,8 @@ message Job {
   int32 attempts = 5;
   int32 max_attempts = 6;
   JobMetadata metadata = 9;
+  int32 retry_count = 11;
+  int32 max_retries = 12;
 }
 
 enum JobType {

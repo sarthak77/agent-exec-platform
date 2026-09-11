@@ -40,6 +40,9 @@ class JobsSettings:
     # Applied to a CreateJob that omits max_attempts. Config-driven so the retry
     # budget can be tuned per environment without a code change.
     default_max_attempts: int
+    # Applied to a CreateJob that omits max_retries -- the separate,
+    # user/manual retry budget consumed by RetryJob (see services/jobs.py).
+    default_max_retries: int
 
 
 @dataclass(frozen=True, slots=True)

@@ -39,14 +39,16 @@ JOB_TYPE_AGENT_EXECUTION: JobType
 JOB_TYPE_MUTATION: JobType
 
 class CreateJobRequest(_message.Message):
-    __slots__ = ("type", "spec", "max_attempts")
+    __slots__ = ("type", "spec", "max_attempts", "max_retries")
     TYPE_FIELD_NUMBER: _ClassVar[int]
     SPEC_FIELD_NUMBER: _ClassVar[int]
     MAX_ATTEMPTS_FIELD_NUMBER: _ClassVar[int]
+    MAX_RETRIES_FIELD_NUMBER: _ClassVar[int]
     type: JobType
     spec: JobSpec
     max_attempts: int
-    def __init__(self, type: _Optional[_Union[JobType, str]] = ..., spec: _Optional[_Union[JobSpec, _Mapping]] = ..., max_attempts: _Optional[int] = ...) -> None: ...
+    max_retries: int
+    def __init__(self, type: _Optional[_Union[JobType, str]] = ..., spec: _Optional[_Union[JobSpec, _Mapping]] = ..., max_attempts: _Optional[int] = ..., max_retries: _Optional[int] = ...) -> None: ...
 
 class CreateJobResponse(_message.Message):
     __slots__ = ("job",)
@@ -103,7 +105,7 @@ class RetryJobResponse(_message.Message):
     def __init__(self, job: _Optional[_Union[Job, _Mapping]] = ...) -> None: ...
 
 class Job(_message.Message):
-    __slots__ = ("id", "type", "spec", "status", "attempts", "max_attempts", "metadata")
+    __slots__ = ("id", "type", "spec", "status", "attempts", "max_attempts", "metadata", "retry_count", "max_retries")
     ID_FIELD_NUMBER: _ClassVar[int]
     TYPE_FIELD_NUMBER: _ClassVar[int]
     SPEC_FIELD_NUMBER: _ClassVar[int]
@@ -111,6 +113,8 @@ class Job(_message.Message):
     ATTEMPTS_FIELD_NUMBER: _ClassVar[int]
     MAX_ATTEMPTS_FIELD_NUMBER: _ClassVar[int]
     METADATA_FIELD_NUMBER: _ClassVar[int]
+    RETRY_COUNT_FIELD_NUMBER: _ClassVar[int]
+    MAX_RETRIES_FIELD_NUMBER: _ClassVar[int]
     id: str
     type: JobType
     spec: JobSpec
@@ -118,7 +122,9 @@ class Job(_message.Message):
     attempts: int
     max_attempts: int
     metadata: JobMetadata
-    def __init__(self, id: _Optional[str] = ..., type: _Optional[_Union[JobType, str]] = ..., spec: _Optional[_Union[JobSpec, _Mapping]] = ..., status: _Optional[_Union[JobStatus, str]] = ..., attempts: _Optional[int] = ..., max_attempts: _Optional[int] = ..., metadata: _Optional[_Union[JobMetadata, _Mapping]] = ...) -> None: ...
+    retry_count: int
+    max_retries: int
+    def __init__(self, id: _Optional[str] = ..., type: _Optional[_Union[JobType, str]] = ..., spec: _Optional[_Union[JobSpec, _Mapping]] = ..., status: _Optional[_Union[JobStatus, str]] = ..., attempts: _Optional[int] = ..., max_attempts: _Optional[int] = ..., metadata: _Optional[_Union[JobMetadata, _Mapping]] = ..., retry_count: _Optional[int] = ..., max_retries: _Optional[int] = ...) -> None: ...
 
 class JobSpec(_message.Message):
     __slots__ = ("agent_execution_spec",)

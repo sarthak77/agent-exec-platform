@@ -87,18 +87,16 @@ class AgentToolWorkbench(Workbench):
     blocking the chat. start/stop/reset and state are no-ops.
     """
 
-    def __init__(
-        self,
-        tenant_id: str,
-        allowed_tool_names: Sequence[str],
-        approval_sink: list[str] | None = None,
-    ) -> None:
+    def __init__(self, tenant_id: str, allowed_tool_names: Sequence[str]) -> None:
         self._tenant_id = tenant_id
         self._allowed = set(allowed_tool_names)
-        # Shared across every agent's workbench in one run (see groupchat.py):
-        # a tool result signalling a pending approval is appended here so the
-        # run can report it regardless of which agent made the call.
-        self._approval_sink = approval_sink
+        # Owned by this workbench (one per agent; see groupchat.py), not shared
+        # mutable state threaded in from outside: a tool result signalling a
+        # pending approval is recorded here, and the run (GroupChatSession)
+        # pulls it back out after the run completes by reading each
+        # participant's own workbench, rather than every agent writing into a
+        # single list handed to all of them up front.
+        self.pending_approvals: list[str] = []
 
     async def list_tools(self) -> list[ToolSchema]:
         if not self._allowed:
@@ -163,11 +161,11 @@ class AgentToolWorkbench(Workbench):
                 is_error=True,
             )
         content = _render_content(getattr(result, "content", []))
-        if self._approval_sink is not None and APPROVAL_REQUIRED_MARKER in content:
+        if APPROVAL_REQUIRED_MARKER in content:
             # The tool declined to act pending human approval. Record it so the
             # run surfaces a pause; the content still flows back to the model so
             # it can tell the user the action is awaiting approval.
-            self._approval_sink.append(content)
+            self.pending_approvals.append(content)
         return ToolResult(
             name=name,
             result=[TextResultContent(content=content)],

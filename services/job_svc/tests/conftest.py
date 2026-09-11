@@ -8,6 +8,7 @@ job_svc is the source of truth.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 
@@ -21,8 +22,9 @@ from job_svc.models import Base, JobRow
 from job_svc.orchestrator_client import ChatReply, ChatTurn, OrchestratorGateway
 from job_svc.services.jobs import JobService
 
-# Small, explicit budget so tests can exhaust it in one or two attempts.
+# Small, explicit budgets so tests can exhaust them in one or two attempts.
 TEST_DEFAULT_MAX_ATTEMPTS = 3
+TEST_DEFAULT_MAX_RETRIES = 3
 
 
 async def claim_one(service: JobService, *, owner: str = "test-worker") -> JobRow:
@@ -53,7 +55,11 @@ async def sessions() -> AsyncIterator[async_sessionmaker]:
 
 @pytest.fixture
 def service(sessions) -> JobService:
-    return JobService(sessions, default_max_attempts=TEST_DEFAULT_MAX_ATTEMPTS)
+    return JobService(
+        sessions,
+        default_max_attempts=TEST_DEFAULT_MAX_ATTEMPTS,
+        default_max_retries=TEST_DEFAULT_MAX_RETRIES,
+    )
 
 
 class FakeOrchestrator(OrchestratorGateway):
@@ -72,6 +78,7 @@ class FakeOrchestrator(OrchestratorGateway):
         plan: list[str] | None = None,
         fail_on: set[str] | None = None,
         approve_on: set[str] | None = None,
+        delay_seconds: float = 0.0,
     ) -> None:
         self.plan = ["step one", "step two"] if plan is None else plan
         self.fail_on = fail_on or set()
@@ -79,9 +86,15 @@ class FakeOrchestrator(OrchestratorGateway):
         # (as the orchestrator would when a tool paused on a human-approval
         # gate), so the runner's waiting_approval path can be exercised.
         self.approve_on = approve_on or set()
+        # Simulates a slow orchestrator call (e.g. a long LLM turn) so tests
+        # can exercise behavior that only matters while a step is in flight,
+        # like the runner's lease-renewal heartbeat.
+        self.delay_seconds = delay_seconds
         self.calls: list[tuple[str, str]] = []  # (kind, user content)
 
     async def chat(self, *, tenant_id: str, messages: list[ChatTurn]) -> ChatReply:
+        if self.delay_seconds:
+            await asyncio.sleep(self.delay_seconds)
         is_plan = any(t.role == "system" for t in messages)
         user = next((t.content for t in messages if t.role == "user"), "")
         self.calls.append(("plan" if is_plan else "exec", user))

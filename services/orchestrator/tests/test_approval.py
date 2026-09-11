@@ -1,9 +1,9 @@
 """Unit tests for the human-approval signalling path:
 
   * AgentToolWorkbench records a tool result carrying the APPROVAL_REQUIRED
-    marker into its shared approval sink (see mcp_workbench.py), and
-  * run_chat turns a non-empty sink into the APPROVAL_FINISH_REASON, overriding
-    the group chat's own stop reason (see run.py).
+    marker into its own `pending_approvals` (see mcp_workbench.py), and
+  * run_chat turns a non-empty aggregated sink into the APPROVAL_FINISH_REASON,
+    overriding the group chat's own stop reason (see run.py).
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import pytest
 from mcp.types import TextContent
 
 from orchestrator import mcp_workbench, run
+from orchestrator.groupchat import GroupChatSession
 from orchestrator.mcp_workbench import APPROVAL_REQUIRED_MARKER, AgentToolWorkbench
 
 
@@ -41,24 +42,42 @@ def _patch_session(monkeypatch, text: str) -> None:
 
 async def test_workbench_records_pending_approval_in_sink(monkeypatch) -> None:
     _patch_session(monkeypatch, f'{{"status": "{APPROVAL_REQUIRED_MARKER}"}}')
-    sink: list[str] = []
-    wb = AgentToolWorkbench("t1", ["send_email"], sink)
+    wb = AgentToolWorkbench("t1", ["send_email"])
 
     result = await wb.call_tool("send_email", {"to": "a@b"})
 
-    assert sink and APPROVAL_REQUIRED_MARKER in sink[0]
+    assert wb.pending_approvals and APPROVAL_REQUIRED_MARKER in wb.pending_approvals[0]
     # The content still flows back to the model so it can report the hold.
     assert APPROVAL_REQUIRED_MARKER in result.result[0].content
 
 
 async def test_workbench_leaves_sink_empty_for_ordinary_result(monkeypatch) -> None:
     _patch_session(monkeypatch, '{"invoices": []}')
-    sink: list[str] = []
-    wb = AgentToolWorkbench("t1", ["retrieve_invoices"], sink)
+    wb = AgentToolWorkbench("t1", ["retrieve_invoices"])
 
     await wb.call_tool("retrieve_invoices", {})
 
-    assert sink == []
+    assert wb.pending_approvals == []
+
+
+async def test_session_approval_sink_aggregates_across_agent_workbenches() -> None:
+    # Regardless of which agent's workbench recorded a pending approval, the
+    # session-level sink must surface it -- each workbench owns its own list
+    # (no list shared across agents to write into).
+    quiet_wb = AgentToolWorkbench("t1", ["retrieve_invoices"])
+    noisy_wb = AgentToolWorkbench("t1", ["send_email"])
+    noisy_wb.pending_approvals.append("APPROVAL_REQUIRED ...")
+
+    session = GroupChatSession(team=None, name_by_slug={}, clients=[], workbenches=[quiet_wb, noisy_wb])
+
+    assert session.approval_sink == ["APPROVAL_REQUIRED ..."]
+
+
+async def test_session_approval_sink_empty_when_no_workbench_recorded_one() -> None:
+    wb = AgentToolWorkbench("t1", ["retrieve_invoices"])
+    session = GroupChatSession(team=None, name_by_slug={}, clients=[], workbenches=[wb])
+
+    assert session.approval_sink == []
 
 
 # --- run_chat finish_reason ------------------------------------------------

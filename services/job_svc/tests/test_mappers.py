@@ -18,6 +18,8 @@ def _row(status: str = "queued", type: str = "agent_execution", **kw) -> JobRow:
         status=status,
         attempts=1,
         max_attempts=3,
+        retry_count=0,
+        max_retries=3,
         created_at=now(),
         updated_at=now(),
     )
@@ -26,10 +28,12 @@ def _row(status: str = "queued", type: str = "agent_execution", **kw) -> JobRow:
 
 
 def test_job_to_proto_carries_scalar_fields() -> None:
-    proto = job_to_proto(_row(attempts=2, max_attempts=5))
+    proto = job_to_proto(_row(attempts=2, max_attempts=5, retry_count=1, max_retries=4))
     assert proto.id == "job-1"
     assert proto.attempts == 2
     assert proto.max_attempts == 5
+    assert proto.retry_count == 1
+    assert proto.max_retries == 4
     assert proto.type == service_pb2.JOB_TYPE_AGENT_EXECUTION
 
 

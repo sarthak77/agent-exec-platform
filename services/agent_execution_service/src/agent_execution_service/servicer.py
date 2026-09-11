@@ -30,9 +30,14 @@ from agent_execution_service.services.agents import AgentService
 from agent_execution_service.services.tasks import TaskService
 from agent_execution_service.services.tools import ToolService
 from agent_execution_service.validators import (
+    validate_agent_id,
+    validate_agent_tool_ids,
     validate_filter_ids,
+    validate_instructions,
+    validate_name,
     validate_task_id,
     validate_task_input,
+    validate_tool_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,20 +80,26 @@ class AgentExecutionServicer(service_pb2_grpc.AgentExecutionServiceServicer):
     @_handle_errors
     async def CreateAgent(self, request, context):
         tenant_id = tenant_id_from_metadata(context)
+        validate_name(request.name)
+        validate_instructions(request.instructions)
+        tool_ids = list(request.tool_config.ids)
+        validate_agent_tool_ids(tool_ids)
         row, tool_ids = await self._agents.create(
             tenant_id=tenant_id,
             name=request.name,
             instructions=request.instructions,
             llm_config_name=request.llm_config.name,
             llm_config_temperature=request.llm_config.temperature,
-            tool_ids=list(request.tool_config.ids),
+            tool_ids=tool_ids,
         )
         return service_pb2.CreateAgentResponse(agent=agent_to_proto(row, tool_ids))
 
     @_handle_errors
     async def GetAgent(self, request, context):
         tenant_id = tenant_id_from_metadata(context)
-        results = await self._agents.get(tenant_id=tenant_id, ids=list(request.filter.ids))
+        ids = list(request.filter.ids)
+        validate_filter_ids(ids)
+        results = await self._agents.get(tenant_id=tenant_id, ids=ids)
         return service_pb2.GetAgentResponse(
             agents=[agent_to_proto(row, tool_ids) for row, tool_ids in results]
         )
@@ -96,6 +107,11 @@ class AgentExecutionServicer(service_pb2_grpc.AgentExecutionServiceServicer):
     @_handle_errors
     async def UpdateAgent(self, request, context):
         tenant_id = tenant_id_from_metadata(context)
+        validate_agent_id(request.id)
+        validate_name(request.name)
+        validate_instructions(request.instructions)
+        tool_ids = list(request.tool_config.ids)
+        validate_agent_tool_ids(tool_ids)
         row, tool_ids = await self._agents.update(
             tenant_id=tenant_id,
             agent_id=request.id,
@@ -103,19 +119,21 @@ class AgentExecutionServicer(service_pb2_grpc.AgentExecutionServiceServicer):
             instructions=request.instructions,
             llm_config_name=request.llm_config.name,
             llm_config_temperature=request.llm_config.temperature,
-            tool_ids=list(request.tool_config.ids),
+            tool_ids=tool_ids,
         )
         return service_pb2.UpdateAgentResponse(agent=agent_to_proto(row, tool_ids))
 
     @_handle_errors
     async def DeleteAgent(self, request, context):
         tenant_id = tenant_id_from_metadata(context)
+        validate_agent_id(request.id)
         await self._agents.delete(tenant_id=tenant_id, agent_id=request.id)
         return service_pb2.DeleteAgentResponse(success=True)
 
     @_handle_errors
     async def CreateTool(self, request, context):
         tenant_id = tenant_id_from_metadata(context)
+        validate_name(request.name)
         row = await self._tools.create(
             tenant_id=tenant_id,
             name=request.name,
@@ -126,12 +144,16 @@ class AgentExecutionServicer(service_pb2_grpc.AgentExecutionServiceServicer):
     @_handle_errors
     async def GetTool(self, request, context):
         tenant_id = tenant_id_from_metadata(context)
-        rows = await self._tools.get(tenant_id=tenant_id, ids=list(request.filter.ids))
+        ids = list(request.filter.ids)
+        validate_filter_ids(ids)
+        rows = await self._tools.get(tenant_id=tenant_id, ids=ids)
         return service_pb2.GetToolResponse(tools=[tool_to_proto(row) for row in rows])
 
     @_handle_errors
     async def UpdateTool(self, request, context):
         tenant_id = tenant_id_from_metadata(context)
+        validate_tool_id(request.id)
+        validate_name(request.name)
         row = await self._tools.update(
             tenant_id=tenant_id,
             tool_id=request.id,
@@ -143,6 +165,7 @@ class AgentExecutionServicer(service_pb2_grpc.AgentExecutionServiceServicer):
     @_handle_errors
     async def DeleteTool(self, request, context):
         tenant_id = tenant_id_from_metadata(context)
+        validate_tool_id(request.id)
         await self._tools.delete(tenant_id=tenant_id, tool_id=request.id)
         return service_pb2.DeleteToolResponse(success=True)
 

@@ -12,11 +12,12 @@ from datetime import UTC, datetime
 from sqlalchemy import JSON, DateTime
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-# Fallback retry budget. The live default is config-driven
-# (config.JobsSettings.default_max_attempts, injected into JobService); this
-# constant is only the last-resort default for the column and an un-configured
-# JobService.
+# Fallback retry budgets. The live defaults are config-driven
+# (config.JobsSettings.default_max_attempts/default_max_retries, injected into
+# JobService); these constants are only the last-resort defaults for the
+# columns and an un-configured JobService.
 DEFAULT_MAX_ATTEMPTS = 3
+DEFAULT_MAX_RETRIES = 3
 
 
 def new_id() -> str:
@@ -41,6 +42,12 @@ class JobRow(Base):
     status: Mapped[str] = mapped_column(default="queued", index=True)
     attempts: Mapped[int] = mapped_column(default=0)
     max_attempts: Mapped[int] = mapped_column(default=DEFAULT_MAX_ATTEMPTS)
+    # User/manual retry budget: consumed by RetryJob (not the automatic
+    # attempts/max_attempts cycle), which resets `attempts` to 0 and increments
+    # `retry_count` each time a caller retries a job resting at `failed`. Once
+    # both budgets are exhausted the job is dead-lettered.
+    retry_count: Mapped[int] = mapped_column(default=0)
+    max_retries: Mapped[int] = mapped_column(default=DEFAULT_MAX_RETRIES)
     # Runner execution checkpoint (the job's "metadata" for resume/idempotency):
     # the decomposition plan and per-step outputs. Survives failed -> queued ->
     # running retries untouched, so a re-run resumes from the last completed step

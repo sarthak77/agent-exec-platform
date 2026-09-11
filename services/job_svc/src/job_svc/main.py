@@ -29,7 +29,12 @@ async def serve() -> None:
 
     server = grpc.aio.server()
     service_pb2_grpc.add_JobServiceServicer_to_server(
-        JobServicer(Sessions, default_max_attempts=settings.jobs.default_max_attempts), server
+        JobServicer(
+            Sessions,
+            default_max_attempts=settings.jobs.default_max_attempts,
+            default_max_retries=settings.jobs.default_max_retries,
+        ),
+        server,
     )
 
     service_names = (
@@ -55,13 +60,20 @@ async def serve() -> None:
     orchestrator: OrchestratorClient | None = None
     if settings.poller.enabled:
         orchestrator = OrchestratorClient()
-        jobs = JobService(Sessions, default_max_attempts=settings.jobs.default_max_attempts)
+        jobs = JobService(
+            Sessions,
+            default_max_attempts=settings.jobs.default_max_attempts,
+            default_max_retries=settings.jobs.default_max_retries,
+        )
         # Register a runner per job type; the dispatcher picks the right one off
         # each claimed job's type. Types with no runner (e.g. "mutation", not
         # yet implemented) are failed by the dispatcher rather than run.
-        dispatcher = RunnerDispatcher(
-            jobs, {"agent_execution": JobRunner(jobs, orchestrator).run}
+        # Heartbeat at a third of the lease so a run tolerates a couple of
+        # missed renewals before the reaper would consider it abandoned.
+        agent_runner = JobRunner(
+            jobs, orchestrator, heartbeat_interval_seconds=settings.poller.lease_seconds / 3
         )
+        dispatcher = RunnerDispatcher(jobs, {"agent_execution": agent_runner.run})
         poller = JobPoller(
             jobs,
             interval_seconds=settings.poller.interval_seconds,

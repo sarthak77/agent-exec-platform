@@ -27,6 +27,36 @@ def test_unknown_type_value_rejected() -> None:
         JobValidator.validate_type(9999)
 
 
+def test_non_creatable_type_rejected() -> None:
+    # JOB_TYPE_MUTATION maps to a known domain string but has no JobSpec case
+    # and no registered runner, so it must not be creatable via CreateJob.
+    with pytest.raises(ValidationError, match="type is required"):
+        JobValidator.validate_type(service_pb2.JOB_TYPE_MUTATION)
+
+
+# --- validate_spec ----------------------------------------------------------
+
+
+def test_valid_agent_execution_spec_allowed() -> None:
+    spec = service_pb2.JobSpec(
+        agent_execution_spec=service_pb2.AgentExecutionSpec(instructions="do it")
+    )
+    JobValidator.validate_spec("agent_execution", spec)
+
+
+def test_agent_execution_spec_missing_oneof_rejected() -> None:
+    with pytest.raises(ValidationError, match="agent_execution_spec is required"):
+        JobValidator.validate_spec("agent_execution", service_pb2.JobSpec())
+
+
+def test_agent_execution_spec_blank_instructions_rejected() -> None:
+    spec = service_pb2.JobSpec(
+        agent_execution_spec=service_pb2.AgentExecutionSpec(instructions="  ")
+    )
+    with pytest.raises(ValidationError, match="instructions must not be empty"):
+        JobValidator.validate_spec("agent_execution", spec)
+
+
 # --- validate_status -------------------------------------------------------
 
 
@@ -60,6 +90,24 @@ def test_positive_max_attempts_allowed(value: int) -> None:
 def test_non_positive_max_attempts_rejected(value: int) -> None:
     with pytest.raises(ValidationError, match="max_attempts must be >= 1"):
         JobValidator.validate_max_attempts(value)
+
+
+# --- validate_max_retries ----------------------------------------------------
+
+
+def test_none_max_retries_is_allowed() -> None:
+    JobValidator.validate_max_retries(None)
+
+
+@pytest.mark.parametrize("value", [0, 1, 100])
+def test_non_negative_max_retries_allowed(value: int) -> None:
+    JobValidator.validate_max_retries(value)
+
+
+@pytest.mark.parametrize("value", [-1, -5])
+def test_negative_max_retries_rejected(value: int) -> None:
+    with pytest.raises(ValidationError, match="max_retries must be >= 0"):
+        JobValidator.validate_max_retries(value)
 
 
 # --- validate_job_id -------------------------------------------------------

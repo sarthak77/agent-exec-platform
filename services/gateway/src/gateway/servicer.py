@@ -12,7 +12,7 @@ from typing import ParamSpec, TypeVar
 import grpc
 
 from aep.gateway.v1 import service_pb2, service_pb2_grpc
-from gateway.errors import AppError, GuardrailRejected, ProviderError
+from gateway.errors import AppError, GuardrailRejected, ProviderError, ValidationError
 from gateway.guardrails import screen_and_sanitize
 from gateway.models import Message, ToolCall, ToolSpec
 from gateway.provider import OpenAIProvider
@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 _STATUS_BY_ERROR: dict[type[Exception], grpc.StatusCode] = {
     GuardrailRejected: grpc.StatusCode.INVALID_ARGUMENT,
+    ValidationError: grpc.StatusCode.INVALID_ARGUMENT,
     ProviderError: grpc.StatusCode.UNAVAILABLE,
 }
 

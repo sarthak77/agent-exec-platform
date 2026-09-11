@@ -20,9 +20,13 @@ OTHER = "t2"
 SPEC = {"agent_execution_spec": {"name": "demo"}}
 
 
-async def _create(service: JobService, *, tenant_id=TENANT, max_attempts=None):
+async def _create(service: JobService, *, tenant_id=TENANT, max_attempts=None, max_retries=None):
     return await service.create(
-        tenant_id=tenant_id, type="agent_execution", spec=SPEC, max_attempts=max_attempts
+        tenant_id=tenant_id,
+        type="agent_execution",
+        spec=SPEC,
+        max_attempts=max_attempts,
+        max_retries=max_retries,
     )
 
 
@@ -49,6 +53,17 @@ async def test_create_applies_injected_default_max_attempts(sessions) -> None:
 async def test_create_respects_explicit_max_attempts(service) -> None:
     row = await _create(service, max_attempts=1)
     assert row.max_attempts == 1
+
+
+async def test_create_applies_injected_default_max_retries(sessions) -> None:
+    service = JobService(sessions, default_max_retries=5)
+    row = await _create(service)
+    assert row.max_retries == 5
+
+
+async def test_create_respects_explicit_max_retries(service) -> None:
+    row = await _create(service, max_retries=1)
+    assert row.max_retries == 1
 
 
 async def test_create_persists_row(service) -> None:
@@ -147,19 +162,33 @@ async def test_update_cancelled_from_succeeded_fails_precondition(service) -> No
         await service.update(tenant_id=TENANT, job_id=row.id, status="cancelled")
 
 
-# --- update: failed / dead-letter escalation -------------------------------
+# --- update: failed / two-tier retry escalation -----------------------------
 
 
-async def test_update_failed_parks_when_budget_remains(service) -> None:
-    row = await _create(service, max_attempts=2)  # attempt 1 leaves budget
+async def test_update_failed_auto_retries_while_attempts_budget_remains(service) -> None:
+    row = await _create(service, max_attempts=3)  # attempt 1 leaves auto budget
     await service.update(tenant_id=TENANT, job_id=row.id, status="running")
     updated = await service.update(tenant_id=TENANT, job_id=row.id, status="failed")
-    assert updated.status == "failed"
+    # No caller ever notices -- the job is silently requeued, not parked.
+    assert updated.status == "queued"
     assert updated.attempts == 1
 
 
-async def test_update_failed_escalates_to_dead_when_budget_exhausted(service) -> None:
-    row = await _create(service, max_attempts=1)  # one attempt only
+async def test_update_failed_parks_once_attempts_exhausted_with_retries_remaining(
+    service,
+) -> None:
+    row = await _create(service, max_attempts=1, max_retries=3)
+    await service.update(tenant_id=TENANT, job_id=row.id, status="running")
+    updated = await service.update(tenant_id=TENANT, job_id=row.id, status="failed")
+    # Auto budget spent, but the manual budget still has room -- rest here for
+    # a human to notice and call RetryJob.
+    assert updated.status == "failed"
+    assert updated.attempts == 1
+    assert updated.retry_count == 0
+
+
+async def test_update_failed_dead_letters_when_both_budgets_exhausted(service) -> None:
+    row = await _create(service, max_attempts=1, max_retries=0)
     await service.update(tenant_id=TENANT, job_id=row.id, status="running")
     updated = await service.update(tenant_id=TENANT, job_id=row.id, status="failed")
     assert updated.status == "dead"
@@ -175,16 +204,16 @@ async def test_update_failed_from_queued_fails_precondition(service) -> None:
 
 
 async def test_update_queued_from_failed_preserves_attempts(service) -> None:
-    row = await _create(service, max_attempts=3)
+    row = await _create(service, max_attempts=1, max_retries=3)  # -> failed, budget remains
     await service.update(tenant_id=TENANT, job_id=row.id, status="running")
     await service.update(tenant_id=TENANT, job_id=row.id, status="failed")
     updated = await service.update(tenant_id=TENANT, job_id=row.id, status="queued")
     assert updated.status == "queued"
-    assert updated.attempts == 1  # unlike retry(dead), the count is preserved
+    assert updated.attempts == 1  # unlike retry(), the count is preserved
 
 
 async def test_update_queued_from_dead_preserves_attempts(service) -> None:
-    row = await _create(service, max_attempts=1)
+    row = await _create(service, max_attempts=1, max_retries=0)
     await service.update(tenant_id=TENANT, job_id=row.id, status="running")
     await service.update(tenant_id=TENANT, job_id=row.id, status="failed")  # -> dead
     updated = await service.update(tenant_id=TENANT, job_id=row.id, status="queued")
@@ -210,7 +239,7 @@ async def test_update_dead_from_running(service) -> None:
 
 
 async def test_update_dead_from_failed(service) -> None:
-    row = await _create(service, max_attempts=3)
+    row = await _create(service, max_attempts=1, max_retries=3)  # -> failed, budget remains
     await service.update(tenant_id=TENANT, job_id=row.id, status="running")
     await service.update(tenant_id=TENANT, job_id=row.id, status="failed")
     updated = await service.update(tenant_id=TENANT, job_id=row.id, status="dead")
@@ -246,13 +275,29 @@ async def test_update_other_tenant_job_not_found(service) -> None:
 # --- retry -----------------------------------------------------------------
 
 
-async def test_retry_failed_preserves_attempts(service) -> None:
-    row = await _create(service, max_attempts=3)
+async def test_retry_resets_attempts_and_consumes_retry_count(service) -> None:
+    # Auto budget exhausted (parking at failed), manual budget has room.
+    row = await _create(service, max_attempts=1, max_retries=3)
     await service.update(tenant_id=TENANT, job_id=row.id, status="running")
     await service.update(tenant_id=TENANT, job_id=row.id, status="failed")
     updated = await service.retry(tenant_id=TENANT, job_id=row.id)
     assert updated.status == "queued"
-    assert updated.attempts == 1  # keeps marching toward dead
+    # A fresh automatic cycle is granted in exchange for consuming one unit of
+    # the manual budget.
+    assert updated.attempts == 0
+    assert updated.retry_count == 1
+
+
+async def test_retry_repeated_until_manual_budget_exhausted_reaches_dead(service) -> None:
+    row = await _create(service, max_attempts=1, max_retries=1)
+    for _ in range(2):
+        await claim_one(service)
+        await service.update(tenant_id=TENANT, job_id=row.id, status="failed")
+        fetched = await _at(service, TENANT, row.id)
+        if fetched.status == "failed":
+            await service.retry(tenant_id=TENANT, job_id=row.id)
+
+    assert (await _at(service, TENANT, row.id)).status == "dead"
 
 
 async def test_retry_queued_fails_precondition(service) -> None:
@@ -302,7 +347,7 @@ async def test_save_progress_persists_and_survives_status_change(service) -> Non
 
 
 async def test_save_progress_checkpoint_survives_failed_and_retry(service) -> None:
-    row = await _create(service, max_attempts=3)
+    row = await _create(service, max_attempts=1, max_retries=3)  # -> failed, budget remains
     await service.update(tenant_id=TENANT, job_id=row.id, status="running")
     await service.save_progress(job_id=row.id, progress={"plan": ["a", "b"], "steps": {"0": {}}})
     await service.update(tenant_id=TENANT, job_id=row.id, status="failed")
@@ -365,14 +410,27 @@ async def test_reap_expired_requeues_stale_running_and_clears_lease(service, ses
     assert fetched.locked_at is None and fetched.locked_by is None
 
 
-async def test_reap_expired_dead_letters_when_budget_exhausted(service, sessions) -> None:
-    row = await _create(service, max_attempts=1)
+async def test_reap_expired_parks_at_failed_when_attempts_exhausted_but_retries_remain(
+    service, sessions
+) -> None:
+    row = await _create(service, max_attempts=1, max_retries=3)
     await claim_one(service)  # attempt 1 == max
     await _expire_lease(sessions, row.id)
 
     reaped = await service.reap_expired(lease_seconds=60)
 
-    assert [r.status for r in reaped] == ["dead"]  # no budget left -> dead-lettered
+    assert [r.status for r in reaped] == ["failed"]  # manual budget remains -> rest, not dead
+    assert (await _at(service, TENANT, row.id)).status == "failed"
+
+
+async def test_reap_expired_dead_letters_when_both_budgets_exhausted(service, sessions) -> None:
+    row = await _create(service, max_attempts=1, max_retries=0)
+    await claim_one(service)  # attempt 1 == max
+    await _expire_lease(sessions, row.id)
+
+    reaped = await service.reap_expired(lease_seconds=60)
+
+    assert [r.status for r in reaped] == ["dead"]  # no budget left at all -> dead-lettered
     assert (await _at(service, TENANT, row.id)).status == "dead"
 
 
@@ -398,11 +456,39 @@ async def test_reap_expired_ignores_running_without_a_lease(service, sessions) -
     assert (await _at(service, TENANT, row.id)).status == "running"
 
 
+# --- renew_lease (runner heartbeat) -----------------------------------------
+
+
+async def test_renew_lease_prevents_reaping_a_long_running_job(service, sessions) -> None:
+    row = await _create(service)
+    await claim_one(service, owner="w")
+    await _expire_lease(sessions, row.id)  # simulate a lease that's about to go stale
+
+    renewed = await service.renew_lease(job_id=row.id)
+    assert renewed is True
+
+    # The reaper would have requeued this job at the old (expired) lease, but
+    # renew_lease just refreshed it, so it's still considered alive.
+    assert await service.reap_expired(lease_seconds=60) == []
+    assert (await _at(service, TENANT, row.id)).status == "running"
+
+
+async def test_renew_lease_no_op_for_non_running_job(service) -> None:
+    row = await _create(service)  # still queued, never claimed
+
+    assert await service.renew_lease(job_id=row.id) is False
+    assert (await _at(service, TENANT, row.id)).status == "queued"
+
+
+async def test_renew_lease_no_op_for_unknown_job(service) -> None:
+    assert await service.renew_lease(job_id="does-not-exist") is False
+
+
 # --- lease is released when a job returns to the queue ---------------------
 
 
 async def test_retry_clears_lease(service) -> None:
-    row = await _create(service)
+    row = await _create(service, max_attempts=1, max_retries=3)  # -> failed, budget remains
     await claim_one(service, owner="w")
     await service.update(tenant_id=TENANT, job_id=row.id, status="failed")
     await service.retry(tenant_id=TENANT, job_id=row.id)
@@ -412,7 +498,7 @@ async def test_retry_clears_lease(service) -> None:
 
 
 async def test_update_to_queued_clears_lease(service) -> None:
-    row = await _create(service)
+    row = await _create(service, max_attempts=1, max_retries=3)  # -> failed, budget remains
     await claim_one(service, owner="w")
     await service.update(tenant_id=TENANT, job_id=row.id, status="failed")
     await service.update(tenant_id=TENANT, job_id=row.id, status="queued")

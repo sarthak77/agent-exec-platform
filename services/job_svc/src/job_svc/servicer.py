@@ -35,7 +35,11 @@ _STATUS_BY_ERROR: dict[type[Exception], grpc.StatusCode] = {
     NotFoundError: grpc.StatusCode.NOT_FOUND,
     ValidationError: grpc.StatusCode.INVALID_ARGUMENT,
     AuthenticationError: grpc.StatusCode.UNAUTHENTICATED,
-    ConflictError: grpc.StatusCode.ABORTED,
+    # ALREADY_EXISTS, not ABORTED: ConflictError means "this would duplicate an
+    # existing resource," the same conflict agent_execution_service's servicer
+    # maps to ALREADY_EXISTS -- keep both services on one convention for the
+    # same typed error.
+    ConflictError: grpc.StatusCode.ALREADY_EXISTS,
     StateError: grpc.StatusCode.FAILED_PRECONDITION,
 }
 
@@ -60,23 +64,37 @@ def _handle_errors(fn: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
 
 class JobServicer(service_pb2_grpc.JobServiceServicer):
     def __init__(
-        self, sessions: async_sessionmaker, *, default_max_attempts: int | None = None
+        self,
+        sessions: async_sessionmaker,
+        *,
+        default_max_attempts: int | None = None,
+        default_max_retries: int | None = None,
     ) -> None:
         if default_max_attempts is None:
             default_max_attempts = settings.jobs.default_max_attempts
-        self._jobs = JobService(sessions, default_max_attempts=default_max_attempts)
+        if default_max_retries is None:
+            default_max_retries = settings.jobs.default_max_retries
+        self._jobs = JobService(
+            sessions,
+            default_max_attempts=default_max_attempts,
+            default_max_retries=default_max_retries,
+        )
 
     @_handle_errors
     async def CreateJob(self, request, context):
         tenant_id = tenant_id_from_metadata(context)
         job_type = JobValidator.validate_type(request.type)
+        JobValidator.validate_spec(job_type, request.spec)
         max_attempts = request.max_attempts if request.HasField("max_attempts") else None
         JobValidator.validate_max_attempts(max_attempts)
+        max_retries = request.max_retries if request.HasField("max_retries") else None
+        JobValidator.validate_max_retries(max_retries)
         row = await self._jobs.create(
             tenant_id=tenant_id,
             type=job_type,
             spec=spec_to_dict(request.spec),
             max_attempts=max_attempts,
+            max_retries=max_retries,
         )
         return service_pb2.CreateJobResponse(job=job_to_proto(row))
 

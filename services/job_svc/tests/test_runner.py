@@ -4,6 +4,8 @@ the last successful step across a failed/requeued retry."""
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from job_svc.poller import JobPoller
@@ -15,7 +17,13 @@ from tests.conftest import FakeOrchestrator, claim_one
 TENANT = "t1"
 
 
-async def _claimed(service: JobService, *, instructions: str = "do the big thing", max_attempts=3):
+async def _claimed(
+    service: JobService,
+    *,
+    instructions: str = "do the big thing",
+    max_attempts=3,
+    max_retries=None,
+):
     """Create a job and claim it (queued -> running) so the runner receives a
     running row, exactly as the poller would hand it over."""
     job = await service.create(
@@ -23,6 +31,7 @@ async def _claimed(service: JobService, *, instructions: str = "do the big thing
         type="agent_execution",
         spec={"agent_execution_spec": {"instructions": instructions}},
         max_attempts=max_attempts,
+        max_retries=max_retries,
     )
     return await claim_one(service)
 
@@ -77,63 +86,164 @@ async def test_failure_mid_execution_checkpoints_completed_steps(service, orches
 
     await runner.run(row)
 
-    failed = await _fetch(service, row.id)
-    assert failed.status == "failed"
-    assert failed.attempts == 1  # consumed by claim; budget (3) not yet spent
+    # Budget (3) not yet spent, so the runner auto-retries: the job lands back
+    # in `queued`, not parked in `failed` waiting on a manual RetryJob call.
+    retried = await _fetch(service, row.id)
+    assert retried.status == "queued"
+    assert retried.attempts == 1
     # Step a is checkpointed; b/c are not, so a resume re-runs from b.
-    assert set(failed.progress["steps"]) == {"0"}
-    assert failed.progress["steps"]["0"]["output"] == "done: a"
-    assert failed.progress["plan"] == ["a", "b", "c"]
+    assert set(retried.progress["steps"]) == {"0"}
+    assert retried.progress["steps"]["0"]["output"] == "done: a"
+    assert retried.progress["plan"] == ["a", "b", "c"]
 
 
-async def test_planning_failure_marks_job_failed_with_no_plan(service, orchestrator) -> None:
+async def test_planning_failure_dead_letters_once_both_budgets_exhausted(
+    service, orchestrator
+) -> None:
     orchestrator.fail_on = {"plan"}
     runner = JobRunner(service, orchestrator)
-    row = await _claimed(service)
+    # No auto-retry budget left after this attempt, and no manual budget either.
+    row = await _claimed(service, max_attempts=1, max_retries=0)
 
     await runner.run(row)
 
-    failed = await _fetch(service, row.id)
-    assert failed.status == "failed"
-    assert "plan" not in failed.progress  # nothing checkpointed
+    dead = await _fetch(service, row.id)
+    assert dead.status == "dead"
+    assert "plan" not in dead.progress  # nothing checkpointed
 
 
-async def test_empty_plan_fails_job(service, orchestrator) -> None:
-    orchestrator.plan = []
+async def test_planning_failure_rests_at_failed_while_retry_budget_remains(
+    service, orchestrator
+) -> None:
+    orchestrator.fail_on = {"plan"}
     runner = JobRunner(service, orchestrator)
-    row = await _claimed(service)
+    # Auto-retry budget exhausted, but the manual budget still has room -- rest
+    # here for a human to notice and call RetryJob, rather than dead-lettering.
+    row = await _claimed(service, max_attempts=1, max_retries=3)
 
     await runner.run(row)
 
     assert (await _fetch(service, row.id)).status == "failed"
 
 
-async def test_missing_instructions_fails_job(service, orchestrator) -> None:
+async def test_empty_plan_dead_letters_once_both_budgets_exhausted(service, orchestrator) -> None:
+    orchestrator.plan = []
+    runner = JobRunner(service, orchestrator)
+    row = await _claimed(service, max_attempts=1, max_retries=0)
+
+    await runner.run(row)
+
+    assert (await _fetch(service, row.id)).status == "dead"
+
+
+async def test_missing_instructions_dead_letters_once_both_budgets_exhausted(
+    service, orchestrator
+) -> None:
     job = await service.create(
-        tenant_id=TENANT, type="agent_execution", spec={}, max_attempts=3
+        tenant_id=TENANT, type="agent_execution", spec={}, max_attempts=1, max_retries=0
     )
     row = await claim_one(service)
     runner = JobRunner(service, orchestrator)
 
     await runner.run(row)
 
-    assert (await _fetch(service, row.id)).status == "failed"
+    assert (await _fetch(service, row.id)).status == "dead"
     assert orchestrator.calls == []  # never reached the orchestrator
+
+
+async def test_failure_rests_at_failed_after_exhausting_the_auto_retry_budget(service) -> None:
+    # An orchestrator that always fails execution should exhaust the 3-attempt
+    # auto-retry budget by itself -- no external caller ever calls RetryJob --
+    # and then rest the job at `failed`, not loop forever or dead-letter it
+    # while the manual retry budget still has room.
+    always_fails = FakeOrchestrator(plan=["a"], fail_on={"a"})
+    runner = JobRunner(service, always_fails)
+    row = await _claimed(service, max_attempts=3, max_retries=3)
+
+    await runner.run(row)  # attempt 1 -> auto-retried (queued)
+    assert (await _fetch(service, row.id)).status == "queued"
+
+    await runner.run(await claim_one(service))  # attempt 2 -> auto-retried (queued)
+    assert (await _fetch(service, row.id)).status == "queued"
+
+    await runner.run(await claim_one(service))  # attempt 3 -> auto budget exhausted
+    rested = await _fetch(service, row.id)
+    assert rested.status == "failed"
+    assert rested.attempts == 3
+    assert rested.retry_count == 0
+
+
+async def test_failure_dead_letters_after_exhausting_both_budgets(service) -> None:
+    always_fails = FakeOrchestrator(plan=["a"], fail_on={"a"})
+    runner = JobRunner(service, always_fails)
+    row = await _claimed(service, max_attempts=3, max_retries=0)
+
+    await runner.run(row)  # attempt 1 -> auto-retried (queued)
+    await runner.run(await claim_one(service))  # attempt 2 -> auto-retried (queued)
+    await runner.run(await claim_one(service))  # attempt 3 -> both budgets exhausted
+
+    dead = await _fetch(service, row.id)
+    assert dead.status == "dead"
+    assert dead.attempts == 3
+
+
+# --- lease heartbeat --------------------------------------------------------
+
+
+async def test_heartbeat_renews_lease_during_a_long_step(service, sessions) -> None:
+    # A step slow enough to blow past a short lease on its own; without a
+    # heartbeat the reaper would requeue this job out from under the runner
+    # still executing it.
+    orchestrator = FakeOrchestrator(plan=["a"], delay_seconds=0.05)
+    runner = JobRunner(service, orchestrator, heartbeat_interval_seconds=0.01)
+    row = await _claimed(service)
+
+    await runner.run(row)
+
+    done = await _fetch(service, row.id)
+    assert done.status == "succeeded"
+    # The lease would have gone stale multiple times over during the delayed
+    # steps (two orchestrator calls at 0.05s each vs. a 0.02s lease) had the
+    # heartbeat not kept renewing it -- reap_expired must find nothing to reap.
+    assert await service.reap_expired(lease_seconds=0.02) == []
+
+
+async def test_heartbeat_task_is_cancelled_when_run_completes(service, orchestrator, monkeypatch) -> None:
+    cancelled = asyncio.Event()
+
+    async def fake_heartbeat(self, job_id: str) -> None:
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    monkeypatch.setattr(JobRunner, "_heartbeat", fake_heartbeat)
+
+    runner = JobRunner(service, orchestrator)
+    row = await _claimed(service)
+    await runner.run(row)
+
+    # run() awaits the (suppressed-CancelledError) heartbeat task in its
+    # `finally` before returning, so by now it must already be cancelled --
+    # no background task keeps renewing a lease for a job that's terminal.
+    assert cancelled.is_set()
 
 
 # --- resume / idempotency --------------------------------------------------
 
 
 async def test_resume_after_failure_skips_completed_steps(service) -> None:
-    # Attempt 1: step "b" fails after "a" succeeds.
+    # Attempt 1: step "b" fails after "a" succeeds. Budget (3) has room left,
+    # so the runner auto-retries (failed -> queued) without any caller having
+    # to notice and call RetryJob.
     first = FakeOrchestrator(plan=["a", "b", "c"], fail_on={"b"})
     runner = JobRunner(service, first)
     row = await _claimed(service)
     await runner.run(row)
-    assert (await _fetch(service, row.id)).status == "failed"
+    assert (await _fetch(service, row.id)).status == "queued"
 
-    # Requeue (as RetryJob would) and re-claim, preserving the checkpoint.
-    await service.retry(tenant_id=TENANT, job_id=row.id)
+    # Re-claim, preserving the checkpoint, exactly as the poller would.
     reclaimed = await claim_one(service)
     assert reclaimed.progress["steps"].keys() == {"0"}  # checkpoint carried over
 
@@ -290,12 +400,14 @@ async def test_dispatcher_routes_to_runner_for_job_type(service) -> None:
 
 async def test_dispatcher_fails_job_with_no_runner_for_its_type(service) -> None:
     # A "mutation" job has no registered runner, so the dispatcher must fail it
-    # (not leave it running until the reaper picks it up).
+    # (not leave it running until the reaper picks it up). max_attempts=1 so
+    # the auto-retry budget is already spent and the job rests at `failed`
+    # rather than being silently requeued.
     job = await service.create(
         tenant_id=TENANT,
         type="mutation",
         spec={"agent_execution_spec": {"instructions": "mutate"}},
-        max_attempts=3,
+        max_attempts=1,
     )
     row = await claim_one(service)  # queued -> running, attempt 1
     dispatcher = RunnerDispatcher(service, {"agent_execution": lambda r: None})

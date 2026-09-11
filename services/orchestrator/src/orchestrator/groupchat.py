@@ -68,14 +68,21 @@ class GroupChatSession:
         team: SelectorGroupChat,
         name_by_slug: dict[str, str],
         clients: list[GatewayChatCompletionClient],
-        approval_sink: list[str],
+        workbenches: list[AgentToolWorkbench],
     ) -> None:
         self.team = team
         self.name_by_slug = name_by_slug
         self.clients = clients
-        # Non-empty after the run iff some tool paused on a human-approval gate
-        # (see mcp_workbench.py). run.py reads it to set the finish_reason.
-        self.approval_sink = approval_sink
+        self._workbenches = workbenches
+
+    @property
+    def approval_sink(self) -> list[str]:
+        """Non-empty after the run iff some tool paused on a human-approval
+        gate (see mcp_workbench.py). Pulled from each agent's own workbench
+        after the run rather than written into a list shared across agents
+        during it, so no ordering assumption about concurrent tool calls is
+        baked into how the signal gets back to run.py."""
+        return [item for wb in self._workbenches for item in wb.pending_approvals]
 
 
 async def build_group_chat(tenant_id: str) -> GroupChatSession:
@@ -88,21 +95,21 @@ async def build_group_chat(tenant_id: str) -> GroupChatSession:
     taken: set[str] = set()
     name_by_slug: dict[str, str] = {}
     clients: list[GatewayChatCompletionClient] = []
+    workbenches: list[AgentToolWorkbench] = []
     participants = []
-    # One sink shared by every agent's workbench: whichever agent triggers a
-    # pending-approval tool result records it here (see mcp_workbench.py).
-    approval_sink: list[str] = []
 
     for spec in agent_specs:
         slug = _slugify(spec.name, taken)
         name_by_slug[slug] = spec.name
         client = GatewayChatCompletionClient(temperature=spec.llm_config_temperature, stub=stub)
         clients.append(client)
+        workbench = AgentToolWorkbench(tenant_id, spec.tool_names)
+        workbenches.append(workbench)
         participants.append(
             AssistantAgent(
                 slug,
                 model_client=client,
-                workbench=AgentToolWorkbench(tenant_id, spec.tool_names, approval_sink),
+                workbench=workbench,
                 system_message=_agent_system_message(spec),
                 description=f"Domain agent {spec.name!r} (agent id {spec.id}).",
             )
@@ -125,4 +132,4 @@ async def build_group_chat(tenant_id: str) -> GroupChatSession:
         selector_prompt=_SELECTOR_PROMPT,
         allow_repeated_speaker=True,
     )
-    return GroupChatSession(team, name_by_slug, clients, approval_sink)
+    return GroupChatSession(team, name_by_slug, clients, workbenches)

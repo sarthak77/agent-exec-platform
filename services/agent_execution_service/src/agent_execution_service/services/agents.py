@@ -14,7 +14,7 @@ from collections import defaultdict
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from agent_execution_service.errors import NotFoundError, ValidationError
+from agent_execution_service.errors import NotFoundError
 from agent_execution_service.models import AgentRow, AgentToolRow, ToolRow, new_id, now
 
 
@@ -32,7 +32,6 @@ class AgentService:
         llm_config_temperature: float,
         tool_ids: list[str],
     ) -> tuple[AgentRow, list[str]]:
-        _validate(name, instructions)
         row = AgentRow(
             id=new_id(),
             tenant_id=tenant_id,
@@ -77,7 +76,6 @@ class AgentService:
         llm_config_temperature: float,
         tool_ids: list[str],
     ) -> tuple[AgentRow, list[str]]:
-        _validate(name, instructions)
         async with self._sessions.begin() as session:
             row = await session.get(AgentRow, agent_id)
             if row is None or row.tenant_id != tenant_id:
@@ -98,13 +96,6 @@ class AgentService:
             if row is None or row.tenant_id != tenant_id:
                 raise NotFoundError(f"agent {agent_id} not found")
             await session.delete(row)
-
-
-def _validate(name: str, instructions: str) -> None:
-    if not name.strip():
-        raise ValidationError("name must not be empty")
-    if not instructions.strip():
-        raise ValidationError("instructions must not be empty")
 
 
 async def _link_tools(session, tenant_id: str, agent_id: str, tool_ids: list[str]) -> list[str]:

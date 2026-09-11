@@ -16,15 +16,23 @@ has a sensible set of allowed source statuses (see `_ALLOWED_ENTRY` plus the
 `_start`/`_fail` special cases) so nonsensical jumps (e.g. succeeded -> running)
 are rejected as StateError rather than silently applied.
 
-Attempt accounting: moving queued -> running consumes one attempt (via `_start`,
-or `claim_batch` for the poller), and a running -> failed transition dead-letters the
-job (status `dead`) once `attempts` reaches `max_attempts`, otherwise parks it
-at `failed`. RetryJob requeues a failed job while preserving its attempt count
-(so repeated failures still converge on `dead`). A plain UpdateJob(queued) is
-the other requeue path and likewise keeps the attempt count.
+Two-tier retry budget: `attempts`/`max_attempts` is the *automatic* budget,
+consumed at claim time (`_start`/`claim_batch`) with no caller involved --
+while it lasts, a run that fails is silently requeued by `_fail` (or
+`reap_expired`, for a crashed run) so a transient error is retried
+transparently. `retry_count`/`max_retries` is the separate *manual* budget: once
+the automatic budget is exhausted the job rests at `failed` for a human to
+notice, and each RetryJob call resets `attempts` to 0 (granting a fresh
+automatic cycle) while consuming one unit of `retry_count`. Only once *both*
+budgets are exhausted does a job reach `dead` -- truly terminal, no further
+retries by anyone. See `_next_status_after_failure` for the shared decision.
 
-The default retry budget for a CreateJob that omits max_attempts is injected
-(config-driven; see config.JobsSettings.default_max_attempts).
+A plain UpdateJob(queued) is a third, non-resetting requeue path (distinct from
+RetryJob) that keeps both counts as-is.
+
+The default retry budgets for a CreateJob that omits max_attempts/max_retries
+are injected (config-driven; see config.JobsSettings.default_max_attempts /
+default_max_retries).
 
 Horizontal scaling: the poller runs on every pod, so its claim path must let N
 pods share the backlog without contention or double-execution. `claim_batch`
@@ -43,7 +51,7 @@ from sqlalchemy import case, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from job_svc.errors import NotFoundError, StateError, ValidationError
-from job_svc.models import DEFAULT_MAX_ATTEMPTS, JobRow, new_id, now
+from job_svc.models import DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_RETRIES, JobRow, new_id, now
 
 # Target status -> the statuses a job must currently be in to reach it via a
 # plain status overwrite in UpdateJob. "running" is handled by _start (it also
@@ -67,24 +75,51 @@ _ALLOWED_ENTRY = {
 }
 
 
+def _next_status_after_failure():
+    """CASE expression for the status a `running` job lands at when it fails or
+    its claim lease expires: auto-retry (queued, attempts preserved) while the
+    automatic budget remains; otherwise rest at `failed` for a caller to
+    manually RetryJob, until the manual retry_count budget is also exhausted,
+    at which point the job is dead-lettered for good. Shared by `_fail` and
+    `reap_expired`, whose escalation logic is otherwise identical."""
+    return case(
+        (JobRow.attempts < JobRow.max_attempts, "queued"),
+        (JobRow.retry_count < JobRow.max_retries, "failed"),
+        else_="dead",
+    )
+
+
 class JobService:
     def __init__(
-        self, sessions: async_sessionmaker, *, default_max_attempts: int = DEFAULT_MAX_ATTEMPTS
+        self,
+        sessions: async_sessionmaker,
+        *,
+        default_max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        default_max_retries: int = DEFAULT_MAX_RETRIES,
     ) -> None:
         self._sessions = sessions
         self._default_max_attempts = default_max_attempts
+        self._default_max_retries = default_max_retries
 
     async def create(
-        self, *, tenant_id: str, type: str, spec: dict, max_attempts: int | None
+        self,
+        *,
+        tenant_id: str,
+        type: str,
+        spec: dict,
+        max_attempts: int | None,
+        max_retries: int | None = None,
     ) -> JobRow:
-        # max_attempts range is validated at the edge (JobValidator); here we
-        # only fold in the config-driven default when the caller omitted it.
+        # max_attempts/max_retries range is validated at the edge (JobValidator);
+        # here we only fold in the config-driven defaults when the caller
+        # omitted them.
         row = JobRow(
             id=new_id(),
             tenant_id=tenant_id,
             type=type,
             spec=spec,
             max_attempts=max_attempts if max_attempts is not None else self._default_max_attempts,
+            max_retries=max_retries if max_retries is not None else self._default_max_retries,
         )
         async with self._sessions.begin() as session:
             session.add(row)
@@ -146,10 +181,14 @@ class JobService:
         )
 
     async def _fail(self, *, tenant_id: str, job_id: str) -> JobRow:
-        # attempts was already incremented at _start, so escalate to dead once
-        # the budget is spent, otherwise fall back to a retryable failed state.
+        # attempts was already incremented at _start; _next_status_after_failure
+        # decides whether that leaves auto-retry budget (silently requeue),
+        # exhausts it but leaves manual retry budget (rest at failed), or
+        # exhausts both (dead-letter).
         values = {
-            "status": case((JobRow.attempts >= JobRow.max_attempts, "dead"), else_="failed"),
+            "status": _next_status_after_failure(),
+            "locked_at": None,
+            "locked_by": None,
             "updated_at": now(),
         }
         return await self._guarded_update(
@@ -157,13 +196,18 @@ class JobService:
         )
 
     async def retry(self, *, tenant_id: str, job_id: str) -> JobRow:
+        # Consumes one unit of the manual retry budget and, in exchange, grants
+        # a fresh automatic retry cycle -- otherwise a job that immediately
+        # fails again on requeue would have no auto-retry budget left to
+        # silently absorb a second transient error.
         return await self._guarded_update(
             tenant_id=tenant_id,
             job_id=job_id,
             allowed_from={"failed"},
             values={
                 "status": "queued",
-                "attempts": JobRow.attempts,
+                "attempts": 0,
+                "retry_count": JobRow.retry_count + 1,
                 "locked_at": None,
                 "locked_by": None,
                 "updated_at": now(),
@@ -228,11 +272,13 @@ class JobService:
         that claimed them died before reporting a terminal status. Returns the
         reaped rows.
 
-        Attempts are preserved (the attempt was already consumed at claim), and a
-        job that has exhausted its budget is dead-lettered rather than retried,
-        mirroring _fail's escalation. Combined with the persisted progress
-        checkpoint, a reaped job resumes from its last completed step on the next
-        claim rather than restarting.
+        Attempts are preserved (the attempt was already consumed at claim); the
+        resulting status follows the same escalation as _fail (see
+        `_next_status_after_failure`) -- auto-requeued while the automatic
+        budget remains, parked at `failed` for a manual RetryJob once it isn't,
+        and dead-lettered once the manual budget is exhausted too. Combined with
+        the persisted progress checkpoint, a reaped job resumes from its last
+        completed step on the next claim rather than restarting.
 
         System-wide and safe to run from every pod: the UPDATE is atomic, so each
         stale job is reclaimed by exactly one reaper. Jobs with a NULL lease are
@@ -245,9 +291,7 @@ class JobService:
                 update(JobRow)
                 .where(JobRow.status == "running", JobRow.locked_at < cutoff)
                 .values(
-                    status=case(
-                        (JobRow.attempts >= JobRow.max_attempts, "dead"), else_="queued"
-                    ),
+                    status=_next_status_after_failure(),
                     locked_at=None,
                     locked_by=None,
                     updated_at=now(),
@@ -256,6 +300,27 @@ class JobService:
                 .execution_options(synchronize_session=False)
             )
             return list((await session.execute(stmt)).scalars().all())
+
+    async def renew_lease(self, *, job_id: str) -> bool:
+        """Extend a running job's claim lease to now(). Called periodically by
+        the runner while it executes (see runner.JobRunner._heartbeat) so a run
+        whose real wall-clock time exceeds `lease_seconds` is not reaped -- and
+        re-claimed by another worker -- out from under the runner still working
+        on it.
+
+        System-wide, like save_progress: a job is claimed by exactly one runner
+        at a time, so this is a single-writer overwrite, not a race. Returns
+        False if the job is no longer `running` (e.g. it already reached a
+        terminal status), which the caller can safely ignore.
+        """
+        async with self._sessions.begin() as session:
+            stmt = (
+                update(JobRow)
+                .where(JobRow.id == job_id, JobRow.status == "running")
+                .values(locked_at=now())
+                .returning(JobRow.id)
+            )
+            return (await session.execute(stmt)).scalar_one_or_none() is not None
 
     async def save_progress(self, *, job_id: str, progress: dict) -> None:
         # System-wide absolute write of the runner's checkpoint. A job is claimed

@@ -90,6 +90,8 @@ def job_to_proto(row: JobRow) -> service_pb2.Job:
         status=_STATUS_TO_PROTO[row.status],
         attempts=row.attempts,
         max_attempts=row.max_attempts,
+        retry_count=row.retry_count,
+        max_retries=row.max_retries,
         metadata=service_pb2.JobMetadata(
             created_at=dt_to_ts(row.created_at),
             updated_at=dt_to_ts(row.updated_at),

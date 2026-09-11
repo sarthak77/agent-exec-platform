@@ -39,9 +39,13 @@ def screen_and_sanitize(
 
     Raises GuardrailRejected if the input is empty, too long, carries an
     unsupported role, or contains a blocklisted term. Blocklist matching is
-    scoped to individual user messages so the model's own prior turns
+    scoped to individual user and tool messages -- the two roles carrying
+    caller/externally-supplied content -- so the model's own prior turns
     (assistant/system content) can't trip it and a term can't falsely match
-    across a message boundary.
+    across a message boundary. Tool messages carry a tool's *result* (e.g. an
+    HTTP response body or database row fetched by mcp_svc), which is exactly
+    the kind of externally-sourced content a prompt-injection payload could
+    ride in on, so it gets the same screening as direct user input.
     """
     for m in messages:
         if m.role not in _ALLOWED_ROLES:
@@ -56,7 +60,7 @@ def screen_and_sanitize(
         )
 
     for m in messages:
-        if m.role != "user":
+        if m.role not in ("user", "tool"):
             continue
         lowered = m.content.lower()
         for term in blocklist:

@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import json
 
-from openai import AsyncOpenAI, OpenAIError
+from openai import AsyncOpenAI, BadRequestError, OpenAIError
 
 from gateway.config import ModelSettings
-from gateway.errors import ProviderError
+from gateway.errors import ProviderError, ValidationError
 from gateway.models import Completion, Message, ToolCall, ToolSpec, Usage
 
 
@@ -37,12 +37,14 @@ def _to_openai_message(m: Message) -> dict:
 def _to_openai_tools(tools: list[ToolSpec]) -> list[dict]:
     result: list[dict] = []
     for t in tools:
-        # `parameters` is a JSON Schema string; fall back to an empty schema so
-        # a malformed/absent schema doesn't fail the whole request.
+        # `parameters` is a JSON Schema string. A malformed one is a broken
+        # tool registration, not something to paper over: silently swapping in
+        # an empty schema would let the model call the tool with completely
+        # unconstrained arguments instead of surfacing the real problem.
         try:
             parameters = json.loads(t.parameters) if t.parameters else {}
-        except json.JSONDecodeError:
-            parameters = {"type": "object", "properties": {}}
+        except json.JSONDecodeError as exc:
+            raise ValidationError(f"tool {t.name!r} has an invalid parameters schema: {exc}") from exc
         result.append(
             {
                 "type": "function",
@@ -99,7 +101,14 @@ class OpenAIProvider:
                 ),
                 **extra,
             )
+        except BadRequestError as exc:
+            # The provider rejected the request itself as malformed (bad
+            # message shape, invalid model params, ...) -- the caller's fault,
+            # not an upstream outage, so this must not map to UNAVAILABLE.
+            raise ValidationError(str(exc)) from exc
         except OpenAIError as exc:
+            # Connectivity, rate limiting, or a provider-side (5xx) failure --
+            # genuinely retryable upstream trouble.
             raise ProviderError(str(exc)) from exc
 
         if not response.choices:

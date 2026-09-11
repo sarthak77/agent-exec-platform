@@ -103,6 +103,87 @@ async def test_approve_twice_failed_precondition(servicer, jobs) -> None:
     assert exc.value.code == grpc.StatusCode.FAILED_PRECONDITION
 
 
+async def test_create_agent_blank_name_invalid_argument(servicer) -> None:
+    req = service_pb2.CreateAgentRequest(name=" ", instructions="do stuff")
+    with pytest.raises(Aborted) as exc:
+        await servicer.CreateAgent(req, FakeContext())
+    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+
+async def test_create_agent_blank_instructions_invalid_argument(servicer) -> None:
+    req = service_pb2.CreateAgentRequest(name="agent", instructions=" ")
+    with pytest.raises(Aborted) as exc:
+        await servicer.CreateAgent(req, FakeContext())
+    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+
+async def test_create_agent_empty_tool_ids_invalid_argument(servicer) -> None:
+    req = service_pb2.CreateAgentRequest(name="agent", instructions="do stuff")
+    with pytest.raises(Aborted) as exc:
+        await servicer.CreateAgent(req, FakeContext())
+    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+
+async def test_update_agent_empty_tool_ids_invalid_argument(servicer) -> None:
+    req = service_pb2.UpdateAgentRequest(id="a1", name="agent", instructions="do stuff")
+    with pytest.raises(Aborted) as exc:
+        await servicer.UpdateAgent(req, FakeContext())
+    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+
+async def test_get_agent_blank_filter_id_invalid_argument(servicer) -> None:
+    req = service_pb2.GetAgentRequest(filter=service_pb2.GetAgentRequestFilter(ids=[""]))
+    with pytest.raises(Aborted) as exc:
+        await servicer.GetAgent(req, FakeContext())
+    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+
+async def test_update_agent_blank_id_invalid_argument(servicer) -> None:
+    req = service_pb2.UpdateAgentRequest(id=" ", name="agent", instructions="do stuff")
+    with pytest.raises(Aborted) as exc:
+        await servicer.UpdateAgent(req, FakeContext())
+    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+
+async def test_delete_agent_blank_id_invalid_argument(servicer) -> None:
+    with pytest.raises(Aborted) as exc:
+        await servicer.DeleteAgent(service_pb2.DeleteAgentRequest(id=" "), FakeContext())
+    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+
+async def test_create_tool_blank_name_invalid_argument(servicer) -> None:
+    with pytest.raises(Aborted) as exc:
+        await servicer.CreateTool(service_pb2.CreateToolRequest(name=" "), FakeContext())
+    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+
+async def test_get_tool_blank_filter_id_invalid_argument(servicer) -> None:
+    req = service_pb2.GetToolRequest(filter=service_pb2.GetToolRequestFilter(ids=[""]))
+    with pytest.raises(Aborted) as exc:
+        await servicer.GetTool(req, FakeContext())
+    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+
+async def test_update_tool_blank_id_invalid_argument(servicer) -> None:
+    req = service_pb2.UpdateToolRequest(id=" ", name="tool")
+    with pytest.raises(Aborted) as exc:
+        await servicer.UpdateTool(req, FakeContext())
+    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+
+async def test_update_tool_blank_name_invalid_argument(servicer) -> None:
+    req = service_pb2.UpdateToolRequest(id="t1", name=" ")
+    with pytest.raises(Aborted) as exc:
+        await servicer.UpdateTool(req, FakeContext())
+    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+
+async def test_delete_tool_blank_id_invalid_argument(servicer) -> None:
+    with pytest.raises(Aborted) as exc:
+        await servicer.DeleteTool(service_pb2.DeleteToolRequest(id=" "), FakeContext())
+    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+
 async def test_approve_transitions_status(servicer, jobs) -> None:
     created = await servicer.CreateTask(
         service_pb2.CreateTaskRequest(input="go"), FakeContext()

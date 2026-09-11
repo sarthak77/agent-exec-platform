@@ -12,6 +12,9 @@ database = "job_svc"
 [jobs]
 # Retry budget applied to a CreateJob that does not specify max_attempts.
 default_max_attempts = 3
+# User/manual retry budget (via RetryJob) applied to a CreateJob that does not
+# specify max_retries.
+default_max_retries = 3
 
 [poller]
 # Background loop that claims queued jobs and hands them to the runner.

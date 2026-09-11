@@ -15,6 +15,11 @@ message CreateJobRequest {
   JobType type = 1;
   JobSpec spec = 2;
   optional int32 max_attempts = 3;
+  // User/manual retry budget: how many times a caller may RetryJob a job that
+  // has exhausted its automatic retry budget (max_attempts) and rests at
+  // `failed`, before it is dead-lettered. Distinct from max_attempts, which is
+  // consumed automatically by the runner without any caller involvement.
+  optional int32 max_retries = 4;
 }
 
 message CreateJobResponse {
@@ -77,6 +82,11 @@ message Job {
   int32 max_attempts = 6;
   JobMetadata metadata = 9;
   JobProgress progress = 10; // runner execution checkpoint (resume/idempotency)
+  // How many times a caller has retried this job via RetryJob, and the budget
+  // of such retries before it is dead-lettered. Distinct from attempts/
+  // max_attempts, which track the automatic (no-caller-involved) retry cycle.
+  int32 retry_count = 11;
+  int32 max_retries = 12;
 }
 
 // Execution checkpoint the runner maintains: the prompt decomposition plan and

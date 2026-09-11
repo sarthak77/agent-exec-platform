@@ -34,13 +34,25 @@ class FakeContext:
 
 @pytest.fixture
 def servicer(sessions) -> JobServicer:
-    return JobServicer(sessions, default_max_attempts=3)
+    return JobServicer(sessions, default_max_attempts=3, default_max_retries=3)
 
 
-def _create_req(*, type=service_pb2.JOB_TYPE_AGENT_EXECUTION, max_attempts=None):
-    kw = {"type": type}
+def _create_req(
+    *,
+    type=service_pb2.JOB_TYPE_AGENT_EXECUTION,
+    max_attempts=None,
+    max_retries=None,
+    spec=None,
+):
+    if spec is None:
+        spec = service_pb2.JobSpec(
+            agent_execution_spec=service_pb2.AgentExecutionSpec(instructions="do the thing")
+        )
+    kw = {"type": type, "spec": spec}
     if max_attempts is not None:
         kw["max_attempts"] = max_attempts
+    if max_retries is not None:
+        kw["max_retries"] = max_retries
     return service_pb2.CreateJobRequest(**kw)
 
 
@@ -59,6 +71,22 @@ async def test_create_job_explicit_max_attempts(servicer) -> None:
     assert resp.job.max_attempts == 5
 
 
+async def test_create_job_default_max_retries(servicer) -> None:
+    resp = await servicer.CreateJob(_create_req(), FakeContext())
+    assert resp.job.max_retries == 3  # config-driven default applied
+
+
+async def test_create_job_explicit_max_retries(servicer) -> None:
+    resp = await servicer.CreateJob(_create_req(max_retries=7), FakeContext())
+    assert resp.job.max_retries == 7
+
+
+async def test_create_job_negative_max_retries_invalid_argument(servicer) -> None:
+    with pytest.raises(Aborted) as exc:
+        await servicer.CreateJob(_create_req(max_retries=-1), FakeContext())
+    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+
 async def test_create_job_unspecified_type_invalid_argument(servicer) -> None:
     with pytest.raises(Aborted) as exc:
         await servicer.CreateJob(_create_req(type=service_pb2.JOB_TYPE_UNSPECIFIED), FakeContext())
@@ -68,6 +96,29 @@ async def test_create_job_unspecified_type_invalid_argument(servicer) -> None:
 async def test_create_job_zero_max_attempts_invalid_argument(servicer) -> None:
     with pytest.raises(Aborted) as exc:
         await servicer.CreateJob(_create_req(max_attempts=0), FakeContext())
+    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+
+async def test_create_job_mutation_type_invalid_argument(servicer) -> None:
+    with pytest.raises(Aborted) as exc:
+        await servicer.CreateJob(_create_req(type=service_pb2.JOB_TYPE_MUTATION), FakeContext())
+    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+
+async def test_create_job_missing_spec_invalid_argument(servicer) -> None:
+    with pytest.raises(Aborted) as exc:
+        await servicer.CreateJob(
+            _create_req(spec=service_pb2.JobSpec()), FakeContext()
+        )
+    assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
+
+
+async def test_create_job_blank_instructions_invalid_argument(servicer) -> None:
+    spec = service_pb2.JobSpec(
+        agent_execution_spec=service_pb2.AgentExecutionSpec(instructions="   ")
+    )
+    with pytest.raises(Aborted) as exc:
+        await servicer.CreateJob(_create_req(spec=spec), FakeContext())
     assert exc.value.code == grpc.StatusCode.INVALID_ARGUMENT
 
 

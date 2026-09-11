@@ -28,6 +28,34 @@ def validate_task_id(value: str) -> None:
         raise ValidationError("task_id must not be empty")
 
 
+def validate_agent_id(value: str) -> None:
+    if not value or not value.strip():
+        raise ValidationError("agent_id must not be empty")
+
+
+def validate_tool_id(value: str) -> None:
+    if not value or not value.strip():
+        raise ValidationError("tool_id must not be empty")
+
+
+def validate_name(value: str) -> None:
+    if not value or not value.strip():
+        raise ValidationError("name must not be empty")
+
+
+def validate_instructions(value: str) -> None:
+    if not value or not value.strip():
+        raise ValidationError("instructions must not be empty")
+
+
+def validate_agent_tool_ids(tool_ids: list[str]) -> None:
+    """Every agent must be granted at least one tool -- an agent with none
+    can never do anything, so an empty grant is rejected at the edge rather
+    than silently creating a useless agent."""
+    if not tool_ids:
+        raise ValidationError("tool_config.ids must not be empty")
+
+
 def validate_filter_ids(ids: list[str]) -> None:
     if len(ids) > MAX_FILTER_IDS:
         raise ValidationError(f"filter may contain at most {MAX_FILTER_IDS} ids")

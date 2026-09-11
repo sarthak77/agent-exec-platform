@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from agent_execution_service.errors import ConflictError, NotFoundError, ValidationError
+from agent_execution_service.errors import ConflictError, NotFoundError
 from agent_execution_service.models import ToolRow, new_id, now
 
 
@@ -20,7 +20,6 @@ class ToolService:
         self._sessions = sessions
 
     async def create(self, *, tenant_id: str, name: str, description: str | None) -> ToolRow:
-        _validate(name)
         row = ToolRow(id=new_id(), tenant_id=tenant_id, name=name, description=description)
         async with self._sessions.begin() as session:
             session.add(row)
@@ -35,7 +34,6 @@ class ToolService:
             return list((await session.scalars(stmt)).all())
 
     async def update(self, *, tenant_id: str, tool_id: str, name: str, description: str) -> ToolRow:
-        _validate(name)
         async with self._sessions.begin() as session:
             row = await session.get(ToolRow, tool_id)
             if row is None or row.tenant_id != tenant_id:
@@ -53,11 +51,6 @@ class ToolService:
             if row is None or row.tenant_id != tenant_id:
                 raise NotFoundError(f"tool {tool_id} not found")
             await session.delete(row)
-
-
-def _validate(name: str) -> None:
-    if not name.strip():
-        raise ValidationError("name must not be empty")
 
 
 async def _flush_or_conflict(session, name: str) -> None:
